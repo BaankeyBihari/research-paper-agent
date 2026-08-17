@@ -19,6 +19,7 @@ Usage:
 import asyncio
 import difflib
 import os
+import time
 from pathlib import Path
 
 from eval_pipeline import Evaluator, ScoreResult
@@ -63,6 +64,11 @@ CANDIDATE_SLUGS = [
     ).split(",")
     if s.strip()
 ]
+if not CANDIDATE_SLUGS:
+    raise SystemExit(
+        "CANDIDATE_MODEL_SLUGS resolved to an empty list -- set it to at least one "
+        "comma-separated OpenRouter model slug, or unset it to use the default"
+    )
 
 PAPER_SUMMARY_FIELDS = list(PaperSummary.model_fields)
 
@@ -116,9 +122,15 @@ async def main() -> None:
 
     print(f"Running reference model ({REFERENCE_SLUG}) on {len(papers)} paper(s)...", flush=True)
     reference_agent = ResearchAgent(llm=get_llm_client(f"openrouter/{REFERENCE_SLUG}"))
-    reference_summaries: dict[Path, PaperSummary] = {
-        path: await reference_agent.summarize_paper(text) for path, text in paper_texts.items()
-    }
+    # Timed by hand (rather than through eval_pipeline, like the candidates below) since
+    # the reference run happens outside Evaluator -- its output is what candidates get
+    # scored against, not something Evaluator itself runs or times.
+    reference_summaries: dict[Path, PaperSummary] = {}
+    reference_durations: list[float] = []
+    for path, text in paper_texts.items():
+        start = time.perf_counter()
+        reference_summaries[path] = await reference_agent.summarize_paper(text)
+        reference_durations.append(time.perf_counter() - start)
 
     models = {slug: get_llm_client(f"openrouter/{slug}") for slug in CANDIDATE_SLUGS}
     evaluator = Evaluator(
@@ -148,12 +160,21 @@ async def main() -> None:
 
     print(f"\nReference model: {REFERENCE_SLUG}")
     print(results.summary())
+    if reference_durations:
+        avg_ref_latency = sum(reference_durations) / len(reference_durations)
+        print(f"{REFERENCE_SLUG} (reference): avg latency = {avg_ref_latency:.2f}s")
     for slug in CANDIDATE_SLUGS:
-        scores = [
-            r.scores["PaperSimilarityScorer"].score for r in results.results if r.model == slug
-        ]
+        slug_results = [r for r in results.results if r.model == slug]
+        scores = [r.scores["PaperSimilarityScorer"].score for r in slug_results]
+        # duration_seconds comes from eval_pipeline itself (per-sample timing it already
+        # tracks), not from our own timer -- consistent with how the reference latency
+        # above is measured by hand since it runs outside Evaluator.
+        durations = [r.duration_seconds for r in slug_results if r.duration_seconds is not None]
         if scores:
-            print(f"{slug}: avg similarity to reference = {sum(scores) / len(scores):.3f} ({len(scores)} papers)")
+            line = f"{slug}: avg similarity to reference = {sum(scores) / len(scores):.3f} ({len(scores)} papers)"
+            if durations:
+                line += f", avg latency = {sum(durations) / len(durations):.2f}s"
+            print(line)
     if results.output_file:
         print(
             f"\nFull results: {results.output_file} (offline copy; the trace viewer's "

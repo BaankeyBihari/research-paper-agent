@@ -52,16 +52,27 @@ def extract_pdf_text(path: Path, max_chars: int = MAX_CHARS) -> str:
     return text[:max_chars]
 
 
+def _version_num(stem: str) -> int:
+    """Extract the trailing "vN" version number from a filename stem, or -1 if there isn't one."""
+    match = re.search(r"v(\d+)$", stem)
+    return int(match.group(1)) if match else -1
+
+
 def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str]) -> list[Path]:
     """Narrow a sorted candidate list down to what should actually be used.
 
     A given count takes precedence over arxiv_ids entirely (mirrors simulator.py's
     fetch-stage precedence): if count is set, just take the first `count` candidates
     and ignore arxiv_ids. Otherwise, if arxiv_ids is non-empty, keep only candidates
-    matching one of those IDs: an exact stem match (so a versioned ID like
-    "2608.11597v1" matches only that exact file) or, for an unversioned ID like
-    "2608.11597", an exact match against the filename stem with its trailing "vN"
-    stripped. This is deliberately not a substring match -- "2608.1159" must not match
+    matching one of those IDs:
+    - A versioned ID like "2608.11597v1" is an exact stem match against that one file.
+    - An unversioned ID like "2608.11597" matches on the filename stem with its trailing
+      "vN" stripped, but selects only the highest-versioned matching file rather than
+      every version -- simulator.py keeps an old PDF on disk if arXiv later serves a
+      newer version of the same paper (it only skips re-downloading, never deletes), so
+      without this an unversioned ID could otherwise select both v1 and v2 and produce
+      duplicate summaries/evaluations plus extra paid LLM calls.
+    This is deliberately not a substring match -- "2608.1159" must not match
     "2608.11597v1.pdf", which it would under `in`.
 
     IDs are normalized to their last "/"-separated segment before matching, the same
@@ -73,11 +84,20 @@ def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str
         return candidates[:count]
     if arxiv_ids:
         normalized_ids = {aid.rsplit("/", 1)[-1] for aid in arxiv_ids}
-        return [
-            p
-            for p in candidates
-            if p.stem in normalized_ids or re.sub(r"v\d+$", "", p.stem) in normalized_ids
-        ]
+        versioned_ids = {nid for nid in normalized_ids if re.search(r"v\d+$", nid)}
+        unversioned_ids = normalized_ids - versioned_ids
+
+        latest_by_base: dict[str, Path] = {}
+        for p in candidates:
+            base = re.sub(r"v\d+$", "", p.stem)
+            if base not in unversioned_ids:
+                continue
+            current = latest_by_base.get(base)
+            if current is None or _version_num(p.stem) > _version_num(current.stem):
+                latest_by_base[base] = p
+
+        selected = set(latest_by_base.values()) | {p for p in candidates if p.stem in versioned_ids}
+        return [p for p in candidates if p in selected]
     return candidates
 
 
