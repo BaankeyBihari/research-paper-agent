@@ -446,6 +446,9 @@ class ModelSelectorHandler(BaseHTTPRequestHandler):
         models: list[dict] = getattr(self.server, "models", [])
         env_path: Path = getattr(self.server, "env_path", Path(".env"))
         known_slugs = {m["id"] for m in models}
+        if not isinstance(slug, str):
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "Invalid model slug."})
+            return
         if slug not in known_slugs:
             self._json(HTTPStatus.BAD_REQUEST, {"message": "Unknown model slug."})
             return
