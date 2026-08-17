@@ -18,6 +18,25 @@ cp .env.example .env
 docker compose up --build
 ```
 
+To discover live OpenRouter model slugs/pricing before editing `.env`, use:
+
+```bash
+python scripts/select_model.py
+```
+
+Useful filters and `.env` updates:
+
+```bash
+# Show only Google Gemini models in the budget tier
+python scripts/select_model.py --family gemini --tier budget
+
+# Interactively pick a model and write ACTIVE_MODEL_SLUG / REFERENCE_MODEL_SLUG / CANDIDATE_MODEL_SLUGS
+python scripts/select_model.py --interactive
+
+# Non-interactive update: pick row 3 from the filtered list and set REFERENCE_MODEL_SLUG
+python scripts/select_model.py --family anthropic --set-key REFERENCE_MODEL_SLUG --index 3
+```
+
 ## Viewing results
 
 **The processed summaries** (title, objective, methodology, metrics) live in a SQLite table inside
