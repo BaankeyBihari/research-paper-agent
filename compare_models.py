@@ -60,7 +60,7 @@ CANDIDATE_SLUGS = [
     s.strip()
     for s in os.environ.get(
         "CANDIDATE_MODEL_SLUGS",
-        "nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning",
+        "nvidia/nemotron-3-nano-30b-a3b:free,nvidia/nemotron-3.5-lightning:free",
     ).split(",")
     if s.strip()
 ]
@@ -165,7 +165,14 @@ async def main() -> None:
         print(f"{REFERENCE_SLUG} (reference): avg latency = {avg_ref_latency:.2f}s")
     for slug in CANDIDATE_SLUGS:
         slug_results = [r for r in results.results if r.model == slug]
-        scores = [r.scores["PaperSimilarityScorer"].score for r in slug_results]
+        # r.scores can be {} for a sample that failed before scoring ran (e.g. the
+        # candidate call errored or timed out) -- skip those rather than KeyError-ing
+        # and losing the rest of this report.
+        scores = [
+            r.scores["PaperSimilarityScorer"].score
+            for r in slug_results
+            if "PaperSimilarityScorer" in r.scores
+        ]
         # duration_seconds comes from eval_pipeline itself (per-sample timing it already
         # tracks), not from our own timer -- consistent with how the reference latency
         # above is measured by hand since it runs outside Evaluator.

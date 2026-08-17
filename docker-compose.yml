@@ -9,7 +9,7 @@ services:
       ARXIV_PAPER_IDS: ${ARXIV_PAPER_IDS:-}
       # compare_models.py only -- see .env.example
       REFERENCE_MODEL_SLUG: ${REFERENCE_MODEL_SLUG:-openai/gpt-4o-mini}
-      CANDIDATE_MODEL_SLUGS: ${CANDIDATE_MODEL_SLUGS:-nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning}
+      CANDIDATE_MODEL_SLUGS: ${CANDIDATE_MODEL_SLUGS:-nvidia/nemotron-3-nano-30b-a3b:free,nvidia/nemotron-3.5-lightning:free}
       COMPARE_NUM_PAPERS: ${COMPARE_NUM_PAPERS:-}
       COMPARE_ARXIV_PAPER_IDS: ${COMPARE_ARXIV_PAPER_IDS:-}
     volumes:

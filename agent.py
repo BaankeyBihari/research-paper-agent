@@ -129,14 +129,26 @@ class ResearchAgent(Agent, llm=llm):
 
         Narrowed by NUM_PAPERS / ARXIV_PAPER_IDS via select_papers -- see its docstring
         for the precedence rule between the two.
+
+        For an ARXIV_PAPER_IDS-driven, unversioned-ID selection, latest-version picking
+        must run over every matching file on disk, seen or not, before the seen filter is
+        applied -- not the other way around. Otherwise, once the latest version has been
+        processed once (and is therefore "seen"), a later run for the same unversioned ID
+        would only see the older, unprocessed version left over on disk and select that
+        one as if it were new, causing exactly the duplicate paid re-summarize this ID
+        matching is meant to prevent.
         """
         self._init_state_db()
         if not PAPERS_DIR.exists():
             return []
         with sqlite3.connect(STATE_DB) as conn:
             seen = {row[0] for row in conn.execute("SELECT filename FROM processed_papers")}
-        candidates = sorted(p for p in PAPERS_DIR.glob("*.pdf") if p.name not in seen)
-        return select_papers(candidates, NUM_PAPERS, ARXIV_PAPER_IDS)
+        all_candidates = sorted(PAPERS_DIR.glob("*.pdf"))
+        if NUM_PAPERS is None and ARXIV_PAPER_IDS:
+            selected = select_papers(all_candidates, None, ARXIV_PAPER_IDS)
+            return [p for p in selected if p.name not in seen]
+        pending = [p for p in all_candidates if p.name not in seen]
+        return select_papers(pending, NUM_PAPERS, ARXIV_PAPER_IDS)
 
     def lookup_paper(self, filename: str) -> dict | None:
         """Look up a previously processed paper by filename, regardless of which model processed it."""
