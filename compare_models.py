@@ -124,6 +124,8 @@ async def main() -> None:
     # self._model_metadata, which the plain Python API (this one, per its own README)
     # never populates -- only the YAML/from_config path does. Without this, run() raises
     # a pydantic ValidationError building EvalMetadata.models. Pre-populate it directly.
+    # Filed upstream: https://github.com/NVIDIA-NeMo/labs-OO-Agents/issues/152 -- drop this
+    # workaround once a fix lands.
     evaluator._model_metadata = {slug: {"id": slug, "model_name": slug} for slug in CANDIDATE_SLUGS}
     evaluator.add_test(
         name="summarize_paper",

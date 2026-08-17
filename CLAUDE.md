@@ -145,7 +145,9 @@ bug: `Evaluator.run()` (pinned commit `8622fc4`) raises a `pydantic.ValidationEr
 plain-Python `Evaluator(models={...})` API documented in its own README, because `_model_metadata`
 (needed to build the run's metadata line) is only ever populated by the YAML/`from_config` path —
 `compare_models.py` pre-populates `evaluator._model_metadata` directly before calling `run()` as a
-workaround; drop it if a future `eval_pipeline` release fixes this upstream. Its `summarize_paper`
+workaround; filed upstream as
+[NVIDIA-NeMo/labs-OO-Agents#152](https://github.com/NVIDIA-NeMo/labs-OO-Agents/issues/152) —
+drop the workaround once a fix lands. Its `summarize_paper`
 docstring is a deliberate literal copy of `agent.py`'s, not a
 shared constant — simpler to keep in sync by hand for one short prompt than to add an indirection for
 it. Update both together if the prompt changes.
