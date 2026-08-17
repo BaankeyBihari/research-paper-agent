@@ -96,6 +96,18 @@ class PaperSimilarityScorer:
     """Scores a candidate PaperSummary against a reference one via per-field difflib ratio."""
 
     def score(self, ctx: ScoringContext) -> ScoreResult:
+        if ctx.actual is None:
+            # A candidate call that errored/timed out gets no output at all -- treat that
+            # as maximally dissimilar (0.0) rather than letting it fall through to the
+            # normal diff path, where an empty actual string can score a perfect 1.0
+            # against a legitimately empty/short expected field (e.g.
+            # resulting_metrics="not reported"), giving a failed run false credit.
+            zero_scores = {field: 0.0 for field in PAPER_SUMMARY_FIELDS}
+            return ScoreResult(
+                score=0.0,
+                reasoning="Candidate produced no output (execution failure)",
+                metadata=zero_scores,
+            )
         expected = _as_field_dict(ctx.expected)
         actual = _as_field_dict(ctx.actual)
         field_scores = {

@@ -75,15 +75,17 @@ def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str
     This is deliberately not a substring match -- "2608.1159" must not match
     "2608.11597v1.pdf", which it would under `in`.
 
-    IDs are normalized to their last "/"-separated segment before matching, the same
-    way simulator.py's _download_entries derives filenames from the arXiv Atom feed's
-    id URL -- otherwise an old-style category-prefixed ID like "hep-th/9901001" would
-    never match its "9901001v1.pdf" file (the category isn't part of the filename).
+    IDs have their "/" replaced with "_" before matching, mirroring how simulator.py's
+    _download_entries encodes filenames from the arXiv Atom feed's id URL. This must keep
+    (not drop) an old-style archive prefix like "hep-th/" -- "hep-th/9901001" and
+    "hep-ph/9901001" are different papers that happen to share a numeric suffix, so
+    stripping the prefix instead of encoding it would let one collide with or shadow the
+    other's file.
     """
     if count is not None:
         return candidates[:count]
     if arxiv_ids:
-        normalized_ids = {aid.rsplit("/", 1)[-1] for aid in arxiv_ids}
+        normalized_ids = {aid.replace("/", "_") for aid in arxiv_ids}
         versioned_ids = {nid for nid in normalized_ids if re.search(r"v\d+$", nid)}
         unversioned_ids = normalized_ids - versioned_ids
 

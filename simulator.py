@@ -49,8 +49,14 @@ def _download_entries(entries: list[ET.Element]) -> None:
         if not pdf_link:
             continue
 
-        arxiv_id = entry.find("atom:id", ATOM_NS).text.rsplit("/", 1)[-1]
-        dest = PAPERS_DIR / f"{arxiv_id}.pdf"
+        # Everything after ".../abs/" is the arXiv ID itself. New-style IDs (e.g.
+        # "2608.11597v1") have no further "/", but old-style pre-2007 IDs are
+        # "<archive>/<number>" (e.g. "hep-th/9901001v1") -- the archive prefix must be
+        # kept and encoded into the filename, not discarded, since two different
+        # archives can share the same numeric suffix (hep-th/9901001 vs hep-ph/9901001
+        # are different papers) and dropping it would silently collide their filenames.
+        arxiv_id = entry.find("atom:id", ATOM_NS).text.split("abs/", 1)[-1]
+        dest = PAPERS_DIR / f"{arxiv_id.replace('/', '_')}.pdf"
         if dest.exists():
             continue
 
