@@ -226,6 +226,8 @@ class ResearchAgent(Agent, llm=llm):
         _record_memory. Separate from the exact-match processed_papers dedup table;
         this is for "find papers similar to X", not "have I processed this file".
         """
+        if k <= 0:
+            return []
         store = _get_memory_store()
         hits = store.knn(_embedder.embed(query), k)
         results = []
