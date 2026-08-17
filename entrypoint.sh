@@ -4,10 +4,12 @@ set -e
 # Start the NOOA trace viewer in the background. This is NOT meant to be
 # reached from outside the container -- it 403s anything that doesn't look
 # like loopback traffic once bound to 0.0.0.0, which Docker's NAT always
-# defeats from the host side. It only needs to be reachable by agent.py over
+# defeats from the host side, and nooa can't run natively on Windows either
+# (imports Unix-only fcntl). It only needs to be reachable by agent.py over
 # the container's own localhost, which this satisfies. To actually view
-# traces, run `nooa start-dev --db ./traces/traces.db` natively on the host
-# against the bind-mounted trace DB (see README.md).
+# traces, open this repo in VS Code's Dev Containers (see README.md) --
+# its port forwarding tunnels from inside the container's own netns, so
+# the connection reads as genuine loopback traffic and the viewer just works.
 nooa start-dev &
 TRACE_VIEWER_PID=$!
 

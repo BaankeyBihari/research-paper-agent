@@ -51,6 +51,10 @@ with sqlite3.connect('/data/papers/.agent_state.sqlite3') as conn:
     for r in conn.execute('SELECT * FROM processed_papers ORDER BY processed_at'):
         print(json.dumps(dict(r), indent=2))
 "
+
+# Compare cheaper models against a reference model on the same papers
+# (costs real money -- meta-llama/llama-3.1-70b-instruct is paid; see README):
+docker compose exec research-agent python compare_models.py
 ```
 
 Switch models via `ACTIVE_MODEL_SLUG` (any OpenRouter slug), e.g.
@@ -89,20 +93,31 @@ skipping ones that already exist on disk.
 
 **Runtime flow** (`entrypoint.sh`, single container): starts `nooa start-dev` (trace viewer) in the
 background, waits 2s, runs `simulator.py` to seed papers, runs `agent.py` to process them, then
-`wait`s on the trace-viewer process so the container stays up and the viewer stays reachable after
-the run finishes. `nooa start-dev` already binds `0.0.0.0:5001` by default (verified) — the explicit
-`--host`/`--port` flags in `entrypoint.sh` are redundant but harmless.
+`wait`s on the trace-viewer process so the container stays up and trace ingestion keeps working
+across reruns. `nooa start-dev` binds `0.0.0.0:5001` by default (verified).
+
+**`compare_models.py`** is a separate, standalone script (not run by `entrypoint.sh`) for comparing
+model quality/latency against a reference model, using plain `difflib` text similarity instead of
+NOOA's real `nooa eval` (which needs the full monorepo + `uv sync`, not just `pip install nooa`, and
+isn't wired up here). It defines its own throwaway `Agent` subclasses per model slug via
+`make_agent()`, one per model, since `Agent`'s `llm=` binding happens at class-definition time and
+can't be swapped per-instance — `ResearchAgent`'s single class-level `llm` is why `agent.py` only
+ever runs one model per process. Its `summarize_paper` docstring is a deliberate literal copy of `agent.py`'s, not a shared constant —
+simpler to keep in sync by hand for one short prompt than to add an indirection for it. Update both
+together if the prompt changes.
 
 **Config surface**: `PAPERS_DIR` (default `/data/papers`), `ACTIVE_MODEL_SLUG`, `OPENROUTER_API_KEY`
 — all read from the environment, set via `docker-compose.yml` from `.env`.
 
 ## Verified live
 
-The full pipeline (build → arXiv download → `pypdf` extract → live OpenRouter call via
-`nvidia/nemotron-3-nano-30b-a3b` → SQLite persist → trace viewer at `localhost:5001`) has been run
-end-to-end. Note: `nooa[cli]` alone does **not** include the trace viewer — `requirements.txt` needs
-`nooa[cli,viewer]`, otherwise `nooa start-dev` exits immediately with "viewer dependencies are not
-installed" and, because `entrypoint.sh` does `wait "$TRACE_VIEWER_PID"`, the whole container exits
-once `agent.py` finishes. See `README.md`'s "Verified" section for details, including a real
-prompt-quality issue seen on `nemotron-3-nano-30b-a3b` (titles picking up author lists, objectives
-copied verbatim) that the `summarize_paper` docstring now explicitly guards against.
+The full pipeline (build → arXiv download → `pypdf` extract → live OpenRouter call →
+SQLite persist → trace viewer via VS Code Dev Containers) has been run end-to-end, including
+`compare_models.py` against the paid `meta-llama/llama-3.1-70b-instruct` reference. Note: `nooa[cli]`
+alone does **not** include the trace viewer — `requirements.txt` needs `nooa[cli,viewer]`, otherwise
+`nooa start-dev` exits immediately with "viewer dependencies are not installed" and, because
+`entrypoint.sh` does `wait "$TRACE_VIEWER_PID"`, the whole container exits once `agent.py` finishes.
+See `README.md`'s "Verified" section for more, including a real prompt-quality issue seen on
+`nemotron-3-nano-30b-a3b` (titles picking up author lists, objectives copied verbatim) that the
+`summarize_paper` docstring now explicitly guards against, and the Evaluations/Memory tabs being
+empty by design (not wired up — see `compare_models.py` and the SQLite-vs-`nooa-memory` note above).

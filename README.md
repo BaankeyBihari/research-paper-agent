@@ -75,6 +75,39 @@ ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build
      "from agent import ResearchAgent; import asyncio; a = ResearchAgent(); print(a.lookup_paper('<filename>.pdf'))"
    ```
 
+## Comparing models against a reference
+
+`compare_models.py` runs the same papers through a stronger "reference" model and one or more
+cheaper "candidate" models, then scores each candidate against the reference's output with plain
+text similarity (`difflib`, stdlib only — no extra API calls, no LLM-judge self-bias risk).
+
+```bash
+docker compose exec research-agent python compare_models.py
+```
+
+Defaults: 2 papers, reference = `meta-llama/llama-3.1-70b-instruct`, candidates = both Nemotron
+tiers. Override via env vars: `COMPARE_NUM_PAPERS`, `REFERENCE_MODEL_SLUG`,
+`CANDIDATE_MODEL_SLUGS` (comma-separated). Full results are saved to
+`/data/papers/model_comparison.json`.
+
+**This is not the real NOOA eval framework** (that would populate the viewer's Evaluations tab) —
+`nooa eval` is a thin passthrough to an `eval_pipeline` package that isn't published to PyPI at all;
+per its own error message it "ships with the nemo-oo-agents monorepo workspace" and would need
+cloning the full GitHub repo and building with `uv sync` instead of our current `pip install`-based
+image. `compare_models.py` gets you the actual comparison without that added weight.
+
+**Cost note**: `meta-llama/llama-3.1-70b-instruct` (no `:free` suffix) is paid — $0.40/M tokens in
+and out on OpenRouter, unlike the free-tier Nemotron models. Each run costs 1 reference call per
+paper. Use `REFERENCE_MODEL_SLUG=meta-llama/llama-3.1-70b-instruct:free` to avoid that if you'd
+rather trade cost for lower-priority routing.
+
+**Reading the scores**: `difflib` similarity is sequence/character-based, not semantic — it
+correctly catches gross divergence (and titles, which are supposed to match verbatim, are a good
+sanity check that scores near 1.0), but it under-rewards accurate paraphrasing. A candidate scoring
+~0.5 isn't necessarily half as good; read the actual summaries side by side, not just the number. Two
+papers is also too small a sample for real conclusions — it's a cost-conscious default, bump
+`COMPARE_NUM_PAPERS` if you want something you'd actually trust.
+
 ## Known deviations from the original spec, and why
 
 - **Structured output is a Pydantic model, not a raw dict.** NOOA's documented convention for
@@ -98,9 +131,12 @@ Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on
   the cross-model persistence test in step 3 actually holds.
 - `nooa start-dev` binds `0.0.0.0:5001` by default and `GET /` returns 200 (serves the SPA shell),
   **but** its data API 403s from outside the container over a published Docker port — the page loads
-  and looks blank. This is what the "Viewing results" section above walks through; the
-  `.devcontainer` setup is in place but hasn't been confirmed working from an actual VS Code session
-  yet (it needs a real Dev Containers session to verify — see below).
+  and looks blank. The `.devcontainer` workaround (see "Viewing results" above) has been confirmed
+  working from an actual VS Code Dev Containers session: traces show up correctly.
+- The trace viewer's **Evaluations** and **Memory** tabs will look empty, and that's expected, not
+  broken: Evaluations is backed by `nooa eval` runs (we don't run one — see `compare_models.py`
+  below for the lighter alternative we built instead), and Memory reads a `nooa_memory.MemoryStore`
+  file that `ResearchAgent` never creates (see the SQLite-vs-`nooa-memory` deviation above).
 
 One tuning note from the live run: on `nemotron-3-nano-30b-a3b`, the first version of the
 `summarize_paper` docstring sometimes produced a `title` containing the full author list, and a
