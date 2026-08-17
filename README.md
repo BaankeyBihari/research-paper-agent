@@ -59,11 +59,17 @@ ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build
   with confidence. Instead, `ResearchAgent` tracks processed papers via a plain `sqlite3` table
   (`processed_papers`) in the same `/data/papers` volume — deterministic, and it's what actually
   makes the persistence test in step 3 above work.
-- **Trace viewer host binding is unverified.** `nooa start-dev` is documented to serve on
-  `localhost:5001`, but no public docs cover host-binding flags. `entrypoint.sh` passes
-  `--host 0.0.0.0 --port 5001` so the mapped Docker port can reach it; if that flag doesn't exist on
-  the installed `nooa-cli` version, check `docker compose exec research-agent nooa start-dev --help`
-  and adjust, or add `network_mode: host` to `docker-compose.yml` for local-only testing.
-- **Not yet verified end-to-end.** Building the image and a live OpenRouter call both require your
-  API key, so `docker compose build` was checked here but an actual model call/trace-viewer session
-  was not. Run `docker compose up --build` and check `localhost:5001` to confirm.
+## Verified
+
+The image builds cleanly and everything that doesn't require a live OpenRouter call has been
+exercised directly in the built container:
+- `nooa start-dev --help` confirms it already binds `0.0.0.0:5001` by default, so `entrypoint.sh`'s
+  explicit `--host`/`--port` flags are redundant but harmless.
+- `agent.py` imports cleanly and `ResearchAgent`'s deterministic SQLite dedup/lookup logic
+  (`get_local_papers`, `lookup_paper`) works correctly against an empty state.
+- `simulator.py` successfully downloads real papers from the live arXiv API, and `pypdf` extracts
+  text from them correctly.
+
+**Not yet verified**: an actual OpenRouter model call (`summarize_paper`) and a live trace-viewer
+session, since both need your `OPENROUTER_API_KEY`. Run `docker compose up --build` and check
+`localhost:5001` to confirm end-to-end.
