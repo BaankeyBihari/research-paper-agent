@@ -6,8 +6,15 @@ services:
       ACTIVE_MODEL_SLUG: ${ACTIVE_MODEL_SLUG:-nvidia/nemotron-3-nano-30b-a3b}
     volumes:
       - papers_data:/data/papers
-    ports:
-      - "5001:5001"
+      - ./traces:/root/.config/nooa
+    # No ports published: the viewer's API 403s anything that doesn't look
+    # like loopback traffic once bound to 0.0.0.0, and Docker's NAT always
+    # defeats that check from the host side (`nooa start-dev` also can't run
+    # natively on Windows as a workaround -- its storage layer imports the
+    # Unix-only `fcntl`). Use the .devcontainer setup instead: VS Code's Dev
+    # Containers port forwarding tunnels from inside the container's own
+    # network namespace, so it presents as genuine loopback traffic and the
+    # viewer just works. See README.md.
 
 volumes:
   papers_data:

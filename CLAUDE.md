@@ -25,8 +25,14 @@ docker compose build          # or: docker build -t research-paper-agent .
 cp .env.example .env          # then edit .env
 docker compose up --build
 
-# Trace viewer (every LLM call / method invocation is auto-traced)
-# http://localhost:5001 once the container is running
+# Trace viewer (every LLM call / method invocation is auto-traced): its API
+# 403s over a published Docker port (loopback-only auth check, defeated by
+# Docker's NAT), and nooa can't run natively on Windows (imports Unix-only
+# fcntl). Open the repo in VS Code's Dev Containers instead -- its port
+# forwarding tunnels from inside the container's netns, so it reads as
+# genuine loopback traffic. .devcontainer/devcontainer.json forwards :5001.
+# Fallback that always works regardless of viewer access: query the SQLite
+# table directly (see "Query processed papers" below).
 
 # Exercise the agent's deterministic paths without a live API key/network,
 # e.g. to check SQLite dedup logic after code changes:
@@ -34,6 +40,16 @@ docker run --rm --entrypoint python research-paper-agent -c "
 import asyncio
 from agent import ResearchAgent
 asyncio.run(...)
+"
+
+# Query processed papers (always works, unlike the trace viewer over a
+# published port -- see the note above):
+docker compose exec research-agent python -c "
+import sqlite3, json
+with sqlite3.connect('/data/papers/.agent_state.sqlite3') as conn:
+    conn.row_factory = sqlite3.Row
+    for r in conn.execute('SELECT * FROM processed_papers ORDER BY processed_at'):
+        print(json.dumps(dict(r), indent=2))
 "
 ```
 

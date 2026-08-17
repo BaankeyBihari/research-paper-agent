@@ -16,7 +16,35 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Trace viewer: http://localhost:5001 (every LLM call and method invocation NOOA makes is traced here).
+## Viewing results
+
+**The processed summaries** (title, objective, methodology, metrics) live in a SQLite table inside
+the container and are the most reliable way to check what happened:
+
+```bash
+docker compose exec research-agent python -c "
+import sqlite3, json
+with sqlite3.connect('/data/papers/.agent_state.sqlite3') as conn:
+    conn.row_factory = sqlite3.Row
+    for r in conn.execute('SELECT * FROM processed_papers ORDER BY processed_at'):
+        print(json.dumps(dict(r), indent=2))
+"
+```
+
+**The trace viewer** (every LLM call, prompt, and method invocation NOOA makes) is trickier to reach
+from a browser on Windows/Mac. It runs inside the container on port 5001, but its API refuses any
+request that doesn't look like loopback traffic once bound to `0.0.0.0` — and Docker's port
+publishing (`-p 5001:5001`) always makes host-side requests look like they came from a bridge/NAT
+address, not `127.0.0.1`, so a plain `docker compose up` + `localhost:5001` in your browser gets a
+403. Running `nooa start-dev` directly on Windows as a workaround doesn't work either — its storage
+layer imports the Unix-only `fcntl` module.
+
+The fix that actually works: open this folder in **VS Code with the Dev Containers extension**
+("Reopen in Container"). VS Code's port forwarding tunnels from *inside* the container's own network
+namespace rather than through Docker's external NAT, so the connection genuinely looks like loopback
+traffic to the viewer and it just works — no token, no extra config. `.devcontainer/devcontainer.json`
+is already set up to forward port 5001 and open it in your browser automatically. If you're not using
+VS Code, the SQLite query above is the dependable fallback.
 
 ## Switching models
 
@@ -63,13 +91,16 @@ ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build
 ## Verified
 
 Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on OpenRouter:
-- Image builds cleanly; `nooa start-dev` binds `0.0.0.0:5001` by default and the trace viewer is
-  reachable at `localhost:5001` (`GET /` returns 200) while the container runs.
-- `simulator.py` downloads real papers from the live arXiv API; `pypdf` extracts their text.
-- `summarize_paper` produces valid `PaperSummary` objects from real model output.
-- The SQLite `processed_papers` table persists correctly across `docker compose down`/`up` cycles
-  (i.e. across the same volume you'd reuse when switching `ACTIVE_MODEL_SLUG`), confirming the
-  cross-model persistence test in step 3 actually holds.
+- Image builds cleanly; `simulator.py` downloads real papers from the live arXiv API; `pypdf`
+  extracts their text; `summarize_paper` produces valid `PaperSummary` objects from real model
+  output; the SQLite `processed_papers` table persists correctly across `docker compose down`/`up`
+  cycles (i.e. across the same volume you'd reuse when switching `ACTIVE_MODEL_SLUG`), confirming
+  the cross-model persistence test in step 3 actually holds.
+- `nooa start-dev` binds `0.0.0.0:5001` by default and `GET /` returns 200 (serves the SPA shell),
+  **but** its data API 403s from outside the container over a published Docker port — the page loads
+  and looks blank. This is what the "Viewing results" section above walks through; the
+  `.devcontainer` setup is in place but hasn't been confirmed working from an actual VS Code session
+  yet (it needs a real Dev Containers session to verify — see below).
 
 One tuning note from the live run: on `nemotron-3-nano-30b-a3b`, the first version of the
 `summarize_paper` docstring sometimes produced a `title` containing the full author list, and a

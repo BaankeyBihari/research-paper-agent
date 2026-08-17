@@ -1,0 +1,14 @@
+{
+  "name": "research-paper-agent",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "research-agent",
+  "workspaceFolder": "/app",
+  "shutdownAction": "stopCompose",
+  "forwardPorts": [5001],
+  "portsAttributes": {
+    "5001": {
+      "label": "NOOA Trace Viewer",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
