@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import requests
@@ -71,16 +72,21 @@ def fetch_models() -> list[dict]:
 
 
 def assign_pricing_tiers(models: list[dict]) -> None:
-    ranked = sorted((m["token_pair_per_m"] for m in models))
-    if not ranked:
-        return
-    low_cut = ranked[len(ranked) // 3]
-    high_cut = ranked[(2 * len(ranked)) // 3]
     for model in models:
-        price = model["token_pair_per_m"]
-        if price <= low_cut:
+        if model["token_pair_per_m"] == 0:
             model["tier"] = "budget"
-        elif price <= high_cut:
+
+    priced = sorted((m for m in models if m["token_pair_per_m"] > 0), key=lambda m: m["token_pair_per_m"])
+    if not priced:
+        return
+
+    n = len(priced)
+    budget_end = math.ceil(n / 3)
+    mid_end = math.ceil((2 * n) / 3)
+    for idx, model in enumerate(priced):
+        if idx < budget_end:
+            model["tier"] = "budget"
+        elif idx < mid_end:
             model["tier"] = "mid"
         else:
             model["tier"] = "premium"
@@ -94,7 +100,7 @@ def filter_models(models: list[dict], families: set[str], tier: str | None) -> l
 
 
 def print_table(models: list[dict], limit: int | None = None) -> None:
-    rows = models[:limit] if limit else models
+    rows = models[:limit] if limit is not None else models
     print(
         " # | tier    | family    | prompt/M | completion/M | prompt+completion/M | model slug"
     )
@@ -122,7 +128,16 @@ def read_env_value(env_path: Path, key: str) -> str | None:
 
 
 def write_env_value(env_path: Path, key: str, value: str) -> None:
-    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    newline = "\n"
+    if env_path.exists():
+        original_bytes = env_path.read_bytes()
+        if b"\r\n" in original_bytes:
+            newline = "\r\n"
+        original_text = original_bytes.decode("utf-8")
+        lines = original_text.splitlines()
+    else:
+        lines = []
+
     updated = False
     for i, line in enumerate(lines):
         if line.startswith(f"{key}="):
@@ -133,7 +148,7 @@ def write_env_value(env_path: Path, key: str, value: str) -> None:
         if lines and lines[-1].strip():
             lines.append("")
         lines.append(f"{key}={value}")
-    env_path.write_text("\n".join(lines) + "\n")
+    env_path.write_text(newline.join(lines) + newline, encoding="utf-8")
 
 
 def update_env_model(env_path: Path, key: str, slug: str, append_candidate: bool) -> None:
@@ -183,7 +198,7 @@ def parse_args() -> argparse.Namespace:
         choices=TIERS,
         help="Filter by dynamic pricing tier (budget/mid/premium).",
     )
-    parser.add_argument("--limit", type=int, default=50, help="Max table rows to print.")
+    parser.add_argument("--limit", type=int, default=50, help="Max table rows to print (0 = all).")
     parser.add_argument("--interactive", action="store_true", help="Prompt and update .env in place.")
     parser.add_argument("--env-file", default=".env", help="Path to the .env file to update.")
     parser.add_argument(
@@ -207,6 +222,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.limit < 0:
+        raise SystemExit("--limit must be >= 0.")
+    if args.interactive and (args.set_key or args.index is not None):
+        raise SystemExit("--interactive cannot be combined with --set-key/--index.")
+    if args.interactive and args.json:
+        raise SystemExit("--interactive cannot be combined with --json.")
+    if args.json and (args.set_key or args.index is not None):
+        raise SystemExit("--json cannot be combined with --set-key/--index.")
+
     models = fetch_models()
     assign_pricing_tiers(models)
     selected = filter_models(models, set(args.family or []), args.tier)
