@@ -18,23 +18,25 @@ cp .env.example .env
 docker compose up --build
 ```
 
-To discover live OpenRouter model slugs/pricing before editing `.env`, use:
+To discover live OpenRouter model slugs/pricing before editing `.env`, start the local selector UI:
 
 ```bash
 python scripts/select_model.py
 ```
 
-Useful filters and `.env` updates:
+This starts a local-only server on `127.0.0.1` and opens (or prints) a URL with a searchable,
+sortable table of all fetched models. Use the page controls to filter by family/tier, search by
+slug, then choose which env key to update (`ACTIVE_MODEL_SLUG`, `REFERENCE_MODEL_SLUG`, or
+`CANDIDATE_MODEL_SLUGS` with append/replace).
+
+Additional options:
 
 ```bash
-# Show only Google Gemini models in the budget tier
-python scripts/select_model.py --family gemini --tier budget
+# Print the fetched model catalog as JSON (for scripting)
+python scripts/select_model.py --json
 
-# Interactively pick a model and write ACTIVE_MODEL_SLUG / REFERENCE_MODEL_SLUG / CANDIDATE_MODEL_SLUGS
-python scripts/select_model.py --interactive
-
-# Non-interactive update: pick row 3 from the filtered list and set REFERENCE_MODEL_SLUG
-python scripts/select_model.py --family anthropic --set-key REFERENCE_MODEL_SLUG --index 3
+# Do not auto-open a browser; only print the local URL
+python scripts/select_model.py --no-browser
 ```
 
 ## Viewing results
