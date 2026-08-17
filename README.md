@@ -74,8 +74,10 @@ pending in `PAPERS_DIR`. Two env vars narrow that down, with `NUM_PAPERS` taking
 
 - `ARXIV_PAPER_IDS=2608.11597,2608.11590` — fetch/process specifically these arXiv IDs (versioned
   or not) instead of random papers / everything pending.
-- `NUM_PAPERS=5` — fetch/process exactly this many, falling back to random selection (fetch) or
-  first-N-pending (process), ignoring `ARXIV_PAPER_IDS` if it's also set.
+- `NUM_PAPERS=5` — fetch/process up to this many (an upper bound, not a guarantee: the simulator
+  skips feed entries that already exist on disk or have no PDF link, and the agent may simply have
+  fewer than N pending PDFs), falling back to random selection (fetch) or first-N-pending (process),
+  ignoring `ARXIV_PAPER_IDS` if it's also set.
 
 ```bash
 ARXIV_PAPER_IDS=2608.11597,2608.11590 docker compose up --build

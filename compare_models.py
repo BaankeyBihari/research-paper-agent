@@ -155,7 +155,10 @@ async def main() -> None:
         if scores:
             print(f"{slug}: avg similarity to reference = {sum(scores) / len(scores):.3f} ({len(scores)} papers)")
     if results.output_file:
-        print(f"\nFull results: {results.output_file} (viewable in the trace viewer's Evaluations tab)")
+        print(
+            f"\nFull results: {results.output_file} (offline copy; the trace viewer's "
+            "Evaluations tab only reflects this run if the viewer was reachable while it ran)"
+        )
 
 
 if __name__ == "__main__":
