@@ -52,6 +52,13 @@ with sqlite3.connect('/data/papers/.agent_state.sqlite3') as conn:
         print(json.dumps(dict(r), indent=2))
 "
 
+# Semantic search over processed papers (deterministic, no LLM/network call --
+# see "State/memory" below):
+docker compose exec research-agent python -c "
+from agent import ResearchAgent
+print(ResearchAgent().find_similar_papers('transformer attention mechanism'))
+"
+
 # Compare cheaper models against a reference model on the same papers
 # (costs real money -- openai/gpt-4o-mini is paid; see README):
 docker compose exec research-agent python compare_models.py
@@ -92,21 +99,28 @@ LLM call. Everything else is a normal deterministic Python method:
 - `summarize_paper(self, text: str) -> PaperSummary` — the one agentic method. `PaperSummary` is a
   Pydantic model (`title`, `main_objective`, `key_methodology`, `resulting_metrics`); NOOA validates
   the LLM's output against it directly, so there is no manual JSON parsing here.
-- `get_local_papers`, `lookup_paper`, `_record_summary`, `_init_state_db`, `process_pending_papers`
-  — deterministic. `_init_state_db` is called lazily (idempotent `CREATE TABLE IF NOT EXISTS`) from
-  the methods that need it rather than from `__init__`, to avoid interfering with `Agent`'s own
-  Pydantic-style field construction.
+- `get_local_papers`, `lookup_paper`, `_record_summary`, `_record_memory`, `find_similar_papers`,
+  `_init_state_db`, `process_pending_papers` — deterministic. `_init_state_db` is called lazily
+  (idempotent `CREATE TABLE IF NOT EXISTS`) from the methods that need it rather than from `__init__`,
+  to avoid interfering with `Agent`'s own Pydantic-style field construction.
 - The LLM client is built once at module load: `get_llm_client(f"openrouter/{MODEL_SLUG}")` from
   `nooa.unifiedllm.registry`, where `MODEL_SLUG` comes from `ACTIVE_MODEL_SLUG` (env var, defaults to
   `nvidia/nemotron-3-nano-30b-a3b`). This is what makes model-switching a pure env-var change.
 
-**State/memory**: dedup and history use a plain `sqlite3` table (`processed_papers`) written directly
-to the `/data/papers` volume — *not* the `nooa-memory` package (which is present in
-`requirements.txt` but unused; it's a vector-search semantic-recall subsystem, not an exact-match
-dedup store, and wasn't documented well enough to wire up with confidence). Because the SQLite file
-lives in the same Docker volume as the PDFs, history survives across container restarts and model
-switches — this is what makes it possible to ask "did model A already read this paper" while model B
-is active.
+**State/memory**: two separate SQLite files, both written directly to the `/data/papers` volume.
+Exact-match dedup and history use a plain `sqlite3` table (`processed_papers`, `.agent_state.sqlite3`)
+— deliberately not `nooa-memory`'s own `MemoryManager`/`MemoryToolsMixin`, since that surface is built
+for an LLM agent that autonomously authors/curates its own memory via tools during reasoning
+(reflection, decay/forgetting, spontaneous per-turn context injection) — none of which fits
+`process_pending_papers`'s fully deterministic orchestration loop. Semantic recall ("find papers
+similar to X") instead uses `nooa_memory`'s lower-level primitives directly: `_record_memory` embeds
+each `PaperSummary` with `get_embedder(EmbeddingConfig())` (`backend="hashing"` — deterministic,
+offline, no LLM/network call) and writes it to a `nooa_memory.MemoryStore` (`.agent_memory.sqlite3`),
+keyed by filename so re-processing a paper overwrites its memory the same way it overwrites its
+`processed_papers` row; `find_similar_papers` embeds a query the same way and calls `store.knn(...)`.
+Because both SQLite files live in the same Docker volume as the PDFs, history survives across
+container restarts and model switches — this is what makes it possible to ask "did model A already
+read this paper" while model B is active.
 
 **`simulator.py`** is standalone and has no dependency on `agent.py`. It hits the live arXiv Atom API
 (`http://export.arxiv.org/api/query`) directly with `requests` + stdlib `xml.etree.ElementTree`
@@ -166,8 +180,21 @@ installed" and, because `entrypoint.sh` does `wait "$TRACE_VIEWER_PID"`, the who
 once `agent.py` finishes. See `README.md`'s "Verified" section for more, including a real
 prompt-quality issue seen on `nemotron-3-nano-30b-a3b` (titles picking up author lists, objectives
 copied verbatim) that the `summarize_paper` docstring now explicitly guards against. The Evaluations
-tab is populated by `compare_models.py`'s real `eval_pipeline` runs; the Memory tab is still empty by
-design (not wired up — see the SQLite-vs-`nooa-memory` note above).
+tab is populated by `compare_models.py`'s real `eval_pipeline` runs. The Memory tab stays empty even
+though `nooa_memory.MemoryStore` is now wired up (see "State/memory" above) — confirmed from the
+viewer's own source (`nooa/viewer/memory_routes.py`): it can only open a store under its own process
+cwd (`/app` in this container, since `entrypoint.sh` never `cd`s from the Dockerfile's `WORKDIR`), and
+auto-discovery narrows that further to `/app/.nooa/memory/*.sqlite`. `.agent_memory.sqlite3`
+deliberately lives under `/data/papers` instead, matching `processed_papers`'s persistence story
+(one Docker volume, survives restarts, no new `docker-compose.yml` volume needed) — a real,
+considered trade-off, not an oversight. `find_similar_papers()` itself works fully regardless of the
+viewer; only the visual tab is affected.
+
+`_record_memory`/`find_similar_papers` confirmed live (`docker compose build` + `docker compose run`):
+`nooa-memory` installs and imports cleanly, `.agent_memory.sqlite3` is created under the mounted
+`/data/papers` volume and survives across separate container runs (same volume, new container), and a
+query correctly ranks a topically-related fake paper above an unrelated one — no `OPENROUTER_API_KEY`
+or network call needed, since the default `hashing` embedder is fully offline.
 
 `meta-llama/llama-3.1-70b-instruct` was `compare_models.py`'s original reference-model default, but
 live verification found it reliably fails to return structured output under NOOA's tool-calling

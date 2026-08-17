@@ -120,6 +120,20 @@ ARXIV_PAPER_IDS=2608.11597,2608.11590 docker compose up --build
      "from agent import ResearchAgent; import asyncio; a = ResearchAgent(); print(a.lookup_paper('<filename>.pdf'))"
    ```
 
+## Finding similar papers
+
+Beyond exact-match dedup (`lookup_paper`), `ResearchAgent.find_similar_papers(query, k=5)` does
+semantic search over every processed paper's summary, backed by `nooa_memory.MemoryStore`
+(deterministic, no LLM/network call — see "Known deviations" below for why this bypasses
+`nooa-memory`'s agentic tool surface):
+
+```bash
+docker compose exec research-agent python -c \
+  "from agent import ResearchAgent; print(ResearchAgent().find_similar_papers('transformer attention mechanism'))"
+```
+
+Returns a list of `{"filename", "title", "score"}` dicts, ranked by cosine similarity.
+
 ## Comparing models against a reference
 
 `compare_models.py` runs the same papers through a stronger "reference" model and one or more
@@ -172,12 +186,14 @@ papers is also too small a sample for real conclusions — it's a cost-conscious
   agentic methods with a structured return type is a `pydantic.BaseModel` subclass — that's what
   `summarize_paper` returns (`PaperSummary`). Functionally equivalent to a dict (same four fields:
   title, main_objective, key_methodology, resulting_metrics) but validated by the framework.
-- **"NOOA's SQLite memory" is not the `nooa-memory` package.** `nooa-memory` (included in
-  `requirements.txt` for you to explore) is a vector-search long-term recall subsystem meant for
-  semantic recall, not exact-match dedup, and its API wasn't documented in enough depth to wire up
-  with confidence. Instead, `ResearchAgent` tracks processed papers via a plain `sqlite3` table
-  (`processed_papers`) in the same `/data/papers` volume — deterministic, and it's what actually
-  makes the persistence test in step 3 above work.
+- **Exact-match dedup doesn't use `nooa-memory`'s agentic tool surface.** `ResearchAgent` still tracks
+  processed papers via a plain `sqlite3` table (`processed_papers`) in the same `/data/papers` volume
+  — deterministic, and it's what actually makes the persistence test in step 3 above work.
+  `nooa-memory` *is* used, but only for semantic recall ("Finding similar papers" above), via its
+  lower-level `MemoryStore`/`Embedder` primitives directly rather than `MemoryManager`/
+  `MemoryToolsMixin` — that agentic surface (LLM-authored `remember`/`recall` tools, reflection,
+  decay/forgetting) is built for an agent that autonomously curates its own memory during reasoning,
+  which doesn't fit `process_pending_papers`'s fully deterministic orchestration loop.
 
 ## Verified
 
@@ -192,9 +208,12 @@ Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on
   and looks blank. The `.devcontainer` workaround (see "Viewing results" above) has been confirmed
   working from an actual VS Code Dev Containers session: traces show up correctly.
 - The trace viewer's **Evaluations** tab is populated by real `eval_pipeline` runs — see
-  `compare_models.py` above. The **Memory** tab will still look empty, and that's expected, not
-  broken: it reads a `nooa_memory.MemoryStore` file that `ResearchAgent` never creates (see the
-  SQLite-vs-`nooa-memory` deviation above).
+  `compare_models.py` above. The **Memory** tab still looks empty even though `nooa_memory.MemoryStore`
+  is now wired up for semantic recall (see "Finding similar papers" / "Known deviations" above) — the
+  viewer's own source (`nooa/viewer/memory_routes.py`) only opens a store under its own process cwd
+  (`/app` in this container), and `.agent_memory.sqlite3` deliberately lives under `/data/papers`
+  instead, matching `processed_papers`'s persistence story rather than adding a second Docker volume.
+  `find_similar_papers()` works fully regardless; only the viewer's visual tab is affected.
 - `compare_models.py` confirmed end-to-end against `eval_pipeline` (both a free-tier dev pass and a
   paid confirmation pass with `openai/gpt-4o-mini`): reference summarization, `Evaluator.add_test`,
   candidate scoring via a custom `PaperSimilarityScorer`, and a well-formed `.noo-eval.jsonl` output
