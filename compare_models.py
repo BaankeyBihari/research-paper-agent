@@ -4,8 +4,10 @@ Runs summarize_paper across REFERENCE_SLUG and CANDIDATE_SLUGS for each paper vi
 eval_pipeline.Evaluator, treating the reference model's output as a silver-standard
 answer and scoring the candidates against it with a difflib-based text-similarity
 scorer (stdlib only -- no extra API calls or LLM-judge circularity). Results are
-written to a .noo-eval.jsonl file under PAPERS_DIR, viewable in the trace viewer's
-Evaluations tab, and summarized on stdout.
+written to a .noo-eval.jsonl file under PAPERS_DIR and summarized on stdout. eval_pipeline
+separately posts eval spans live to the trace viewer's OTLP endpoint during the run, so the
+Evaluations tab only populates if the viewer was already reachable when this ran -- the
+.jsonl file itself is not read by the viewer.
 
 Usage:
     python compare_models.py

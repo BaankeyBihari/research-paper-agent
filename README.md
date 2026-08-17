@@ -114,8 +114,12 @@ Defaults: 2 papers, reference = `openai/gpt-4o-mini`, candidates = both Nemotron
 env vars: `COMPARE_NUM_PAPERS`, `COMPARE_ARXIV_PAPER_IDS` (comma-separated arXiv IDs, precedence as
 in "Choosing which papers to fetch/process" above), `REFERENCE_MODEL_SLUG`, `CANDIDATE_MODEL_SLUGS`
 (comma-separated). A summary prints to stdout; the full run is written as a `.noo-eval.jsonl` file
-under `/data/papers/eval_results/`, which the trace viewer's **Evaluations** tab reads directly (see
-"Viewing results" above for reaching the viewer).
+under `/data/papers/eval_results/`. That file isn't what populates the trace viewer's
+**Evaluations** tab, though: the tab is backed by the viewer's OTLP store, and `eval_pipeline`
+posts eval spans to it live while `Evaluator.run()` executes -- so the tab only fills in if the
+viewer was already reachable *during* the run (see "Viewing results" above for reaching it before
+running `compare_models.py`). The `.jsonl` file is a separate, offline copy of the same results,
+useful even without the viewer running.
 
 `eval_pipeline` is not on PyPI, but it doesn't need a full monorepo clone either: it installs
 straight from a git subdirectory URL (`pip install "eval_pipeline @
@@ -173,10 +177,12 @@ Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on
 - `compare_models.py` confirmed end-to-end against `eval_pipeline` (both a free-tier dev pass and a
   paid confirmation pass with `openai/gpt-4o-mini`): reference summarization, `Evaluator.add_test`,
   candidate scoring via a custom `PaperSimilarityScorer`, and a well-formed `.noo-eval.jsonl` output
-  file (verified metadata/result/completion lines and per-field score breakdowns) written to
-  `localhost:5001`'s OTLP endpoint, which the run log confirmed as reachable (`Viewer:
+  file (verified metadata/result/completion lines and per-field score breakdowns) written locally
+  under `/data/papers/eval_results/`. Separately, the run log confirmed `eval_pipeline` also reached
+  `localhost:5001`'s OTLP endpoint live during the run (`Viewer:
   http://localhost:5001/eval/experiment/...` printed, meaning `eval_pipeline`'s health probe
-  succeeded). Two bugs surfaced and were fixed along the way: `docker-compose.yml` wasn't forwarding
+  succeeded) -- these are two distinct outputs of the same run, not one file being read by the
+  viewer. Two bugs surfaced and were fixed along the way: `docker-compose.yml` wasn't forwarding
   `REFERENCE_MODEL_SLUG`/`CANDIDATE_MODEL_SLUGS`/`COMPARE_NUM_PAPERS` into the container despite
   `.env.example` documenting them (now fixed); and `eval_pipeline`'s own `Evaluator.run()` (commit
   `8622fc4`, the version pinned in `requirements.txt`) raises a `pydantic.ValidationError` building

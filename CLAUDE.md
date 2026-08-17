@@ -135,9 +135,12 @@ front), then scores candidates with a custom `PaperSimilarityScorer` (`eval_pipe
 `Scorer.score(ctx) -> ScoreResult` interface) porting the same per-field `difflib` text-similarity
 logic the script used before this was wired up to `eval_pipeline` — stdlib only, no extra API calls,
 no LLM-judge self-bias risk. Results land in a `.noo-eval.jsonl` file under
-`/data/papers/eval_results/`, which the trace viewer's Evaluations tab reads natively (same
-`localhost:5001/v1/traces` OTLP endpoint `entrypoint.sh` already runs `nooa start-dev` on — no new
-plumbing needed). `REFERENCE_MODEL_SLUG`/`CANDIDATE_MODEL_SLUGS`/`COMPARE_NUM_PAPERS` are forwarded
+`/data/papers/eval_results/` — a separate, offline copy, *not* what the trace viewer's Evaluations
+tab actually reads. That tab is backed by the viewer's OTLP store, and `eval_pipeline` posts eval
+spans to it live while `Evaluator.run()` executes (same `localhost:5001/v1/traces` endpoint
+`entrypoint.sh` already runs `nooa start-dev` on), so the tab only populates if the viewer was
+already reachable during the run — a `.jsonl` file produced with no viewer connected won't show up
+there later. `REFERENCE_MODEL_SLUG`/`CANDIDATE_MODEL_SLUGS`/`COMPARE_NUM_PAPERS` are forwarded
 into the container via `docker-compose.yml`'s `environment:` block, alongside `ACTIVE_MODEL_SLUG` —
 without that, `.env` overrides for `compare_models.py` are silently ignored (a real bug found during
 live verification; see "Verified live" below). The script also works around a genuine `eval_pipeline`

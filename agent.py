@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -57,9 +58,11 @@ def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str
     A given count takes precedence over arxiv_ids entirely (mirrors simulator.py's
     fetch-stage precedence): if count is set, just take the first `count` candidates
     and ignore arxiv_ids. Otherwise, if arxiv_ids is non-empty, keep only candidates
-    whose filename contains one of those IDs (substring match, so both versioned
-    "2608.11597v1" and unversioned "2608.11597" IDs work). With neither set, every
-    candidate passes through unchanged.
+    matching one of those IDs: an exact stem match (so a versioned ID like
+    "2608.11597v1" matches only that exact file) or, for an unversioned ID like
+    "2608.11597", an exact match against the filename stem with its trailing "vN"
+    stripped. This is deliberately not a substring match -- "2608.1159" must not match
+    "2608.11597v1.pdf", which it would under `in`.
 
     IDs are normalized to their last "/"-separated segment before matching, the same
     way simulator.py's _download_entries derives filenames from the arXiv Atom feed's
@@ -69,8 +72,12 @@ def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str
     if count is not None:
         return candidates[:count]
     if arxiv_ids:
-        normalized_ids = [aid.rsplit("/", 1)[-1] for aid in arxiv_ids]
-        return [p for p in candidates if any(nid in p.stem for nid in normalized_ids)]
+        normalized_ids = {aid.rsplit("/", 1)[-1] for aid in arxiv_ids}
+        return [
+            p
+            for p in candidates
+            if p.stem in normalized_ids or re.sub(r"v\d+$", "", p.stem) in normalized_ids
+        ]
     return candidates
 
 
