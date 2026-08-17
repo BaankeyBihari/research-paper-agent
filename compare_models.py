@@ -42,20 +42,37 @@ CANDIDATE_SLUGS = os.environ.get(
     "nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning",
 ).split(",")
 
-PAPER_SUMMARY_FIELDS = ["title", "main_objective", "key_methodology", "resulting_metrics"]
+PAPER_SUMMARY_FIELDS = list(PaperSummary.model_fields)
+
+
+def _as_field_dict(value: PaperSummary | dict | None) -> dict[str, str]:
+    """Normalize a PaperSummary, an equivalent dict, or None into field->str.
+
+    eval_pipeline may hand scorers a dict (e.g. after serialization) rather than the
+    original PaperSummary instance, and ctx.actual is None if a candidate's run
+    failed/timed out. Missing or non-string values become "" rather than raising, so a
+    single failed sample scores as maximally dissimilar instead of aborting the run.
+    """
+    if value is None:
+        data: dict = {}
+    elif isinstance(value, PaperSummary):
+        data = value.model_dump()
+    elif isinstance(value, dict):
+        data = value
+    else:
+        data = {}
+    return {field: str(data[field]) if data.get(field) is not None else "" for field in PAPER_SUMMARY_FIELDS}
 
 
 class PaperSimilarityScorer:
     """Scores a candidate PaperSummary against a reference one via per-field difflib ratio."""
 
     def score(self, ctx: ScoringContext) -> ScoreResult:
+        expected = _as_field_dict(ctx.expected)
+        actual = _as_field_dict(ctx.actual)
         field_scores = {
             field: round(
-                difflib.SequenceMatcher(
-                    None,
-                    getattr(ctx.expected, field).lower(),
-                    getattr(ctx.actual, field).lower(),
-                ).ratio(),
+                difflib.SequenceMatcher(None, expected[field].lower(), actual[field].lower()).ratio(),
                 3,
             )
             for field in PAPER_SUMMARY_FIELDS
