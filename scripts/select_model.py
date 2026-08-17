@@ -1,10 +1,15 @@
-"""Fetch OpenRouter models, bucket them by live pricing tiers, and update .env slugs."""
+"""Serve a local OpenRouter model browser UI and update .env slugs."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import threading
+import webbrowser
+from html import escape
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests
@@ -106,32 +111,6 @@ def assign_pricing_tiers(models: list[dict]) -> None:
             model["tier"] = "premium"
 
 
-def filter_models(models: list[dict], families: set[str], tier: str | None) -> list[dict]:
-    rows = [m for m in models if (not families or m["family"] in families)]
-    if tier:
-        rows = [m for m in rows if m.get("tier") == tier]
-    return sorted(rows, key=lambda m: (m["token_pair_per_m"], m["id"]))
-
-
-def print_table(models: list[dict], limit: int | None = None) -> None:
-    rows = models[:limit] if limit is not None else models
-    print(
-        " # | tier    | family    | prompt/M | completion/M | prompt+completion/M | model slug"
-    )
-    print("-" * 108)
-    for idx, m in enumerate(rows, start=1):
-        print(
-            f"{idx:>2} | "
-            f"{m.get('tier', 'n/a'):<7} | "
-            f"{m['family']:<9} | "
-            f"${m['prompt_per_m']:>7.3f} | "
-            f"${m['completion_per_m']:>11.3f} | "
-            f"${m['token_pair_per_m']:>19.3f} | "
-            f"{m['id']}"
-        )
-    print(f"\nShowing {len(rows)} of {len(models)} matching models.")
-
-
 def read_env_value(env_path: Path, key: str) -> str | None:
     if not env_path.exists():
         return None
@@ -180,109 +159,315 @@ def update_env_model(env_path: Path, key: str, slug: str, append_candidate: bool
     write_env_value(env_path, key, slug)
 
 
-def choose_env_key_interactive() -> str:
-    while True:
-        answer = input(
-            "Choose env key to update "
-            "(ACTIVE_MODEL_SLUG / REFERENCE_MODEL_SLUG / CANDIDATE_MODEL_SLUGS): "
-        ).strip()
-        if answer in ENV_KEYS:
-            return answer
-        print("Invalid key. Please choose one of the listed values.")
+def sorted_models(models: list[dict]) -> list[dict]:
+    return sorted(models, key=lambda m: (m["token_pair_per_m"], m["id"]))
 
 
-def choose_index_interactive(max_idx: int) -> int:
-    while True:
-        answer = input(f"Choose model number (1-{max_idx}): ").strip()
+def build_page(models: list[dict], env_path: Path) -> str:
+    models_json = json.dumps(models)
+    env_display = escape(str(env_path))
+    return f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>Model Selector</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 20px; }}
+    .controls {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }}
+    input, select, button {{ font: inherit; padding: 6px 8px; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #ddd; padding: 6px 8px; text-align: left; }}
+    th button {{ background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }}
+    tr:nth-child(even) {{ background: #fafafa; }}
+    .selection {{ margin: 12px 0; padding: 10px; border: 1px solid #ddd; }}
+    .status {{ margin-top: 8px; font-weight: 600; }}
+  </style>
+</head>
+<body>
+  <h1>OpenRouter model selector</h1>
+  <p>Loaded <strong id=\"count\"></strong> models. Updates write to <code>{env_display}</code>.</p>
+
+  <div class=\"controls\">
+    <label>Search slug <input id=\"search\" type=\"search\" placeholder=\"provider/model\"></label>
+    <label>Family
+      <select id=\"family\">
+        <option value=\"\">All</option>
+        <option value=\"anthropic\">anthropic</option>
+        <option value=\"deepseek\">deepseek</option>
+        <option value=\"gemini\">gemini</option>
+        <option value=\"gemma\">gemma</option>
+        <option value=\"grok\">grok</option>
+        <option value=\"openai\">openai</option>
+        <option value=\"other\">other</option>
+      </select>
+    </label>
+    <label>Tier
+      <select id=\"tier\">
+        <option value=\"\">All</option>
+        <option value=\"budget\">budget</option>
+        <option value=\"mid\">mid</option>
+        <option value=\"premium\">premium</option>
+      </select>
+    </label>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th><button data-sort=\"id\">Model slug</button></th>
+        <th><button data-sort=\"family\">Family</button></th>
+        <th><button data-sort=\"tier\">Tier</button></th>
+        <th><button data-sort=\"prompt_per_m\">Prompt/M</button></th>
+        <th><button data-sort=\"completion_per_m\">Completion/M</button></th>
+        <th><button data-sort=\"token_pair_per_m\">Prompt+Completion/M</button></th>
+        <th>Use</th>
+      </tr>
+    </thead>
+    <tbody id=\"rows\"></tbody>
+  </table>
+
+  <div class=\"selection\">
+    <div>Selected model: <code id=\"selected\">(none)</code></div>
+    <div class=\"controls\">
+      <label>Env key
+        <select id=\"key\">
+          <option value=\"ACTIVE_MODEL_SLUG\">ACTIVE_MODEL_SLUG</option>
+          <option value=\"REFERENCE_MODEL_SLUG\">REFERENCE_MODEL_SLUG</option>
+          <option value=\"CANDIDATE_MODEL_SLUGS\">CANDIDATE_MODEL_SLUGS</option>
+        </select>
+      </label>
+      <label><input id=\"appendCandidate\" type=\"checkbox\"> Append candidate value</label>
+      <button id=\"save\" type=\"button\">Write to .env</button>
+    </div>
+    <div id=\"status\" class=\"status\"></div>
+  </div>
+
+  <script>
+    const MODELS = {models_json};
+    let selectedSlug = "";
+    let sortKey = "token_pair_per_m";
+    let sortAsc = true;
+
+    const searchEl = document.getElementById("search");
+    const familyEl = document.getElementById("family");
+    const tierEl = document.getElementById("tier");
+    const rowsEl = document.getElementById("rows");
+    const countEl = document.getElementById("count");
+    const selectedEl = document.getElementById("selected");
+    const statusEl = document.getElementById("status");
+
+    const fmtUsd = (v) => "$" + Number(v).toFixed(3);
+
+    function setStatus(message, ok=true) {{
+      statusEl.textContent = message;
+      statusEl.style.color = ok ? "#0a7" : "#b00";
+    }}
+
+    function filteredModels() {{
+      const query = searchEl.value.trim().toLowerCase();
+      const family = familyEl.value;
+      const tier = tierEl.value;
+      return MODELS.filter((m) => {{
+        if (family && m.family !== family) return false;
+        if (tier && m.tier !== tier) return false;
+        if (query && !m.id.toLowerCase().includes(query)) return false;
+        return true;
+      }});
+    }}
+
+    function sorted(list) {{
+      return [...list].sort((a, b) => {{
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        const cmp = typeof av === "number" && typeof bv === "number"
+          ? av - bv
+          : String(av).localeCompare(String(bv));
+        return sortAsc ? cmp : -cmp;
+      }});
+    }}
+
+    function render() {{
+      const list = sorted(filteredModels());
+      countEl.textContent = `${{list.length}} / ${{MODELS.length}}`;
+      rowsEl.innerHTML = "";
+      for (const m of list) {{
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${{m.id}}</code></td>
+          <td>${{m.family}}</td>
+          <td>${{m.tier}}</td>
+          <td>${{fmtUsd(m.prompt_per_m)}}</td>
+          <td>${{fmtUsd(m.completion_per_m)}}</td>
+          <td>${{fmtUsd(m.token_pair_per_m)}}</td>
+          <td><button type="button" data-slug="${{m.id}}">Use this</button></td>
+        `;
+        rowsEl.appendChild(tr);
+      }}
+      rowsEl.querySelectorAll("button[data-slug]").forEach((btn) => {{
+        btn.addEventListener("click", () => {{
+          selectedSlug = btn.dataset.slug || "";
+          selectedEl.textContent = selectedSlug || "(none)";
+          setStatus(`Selected ${{selectedSlug}}`);
+        }});
+      }});
+    }}
+
+    searchEl.addEventListener("input", render);
+    familyEl.addEventListener("change", render);
+    tierEl.addEventListener("change", render);
+
+    document.querySelectorAll("button[data-sort]").forEach((btn) => {{
+      btn.addEventListener("click", () => {{
+        const key = btn.dataset.sort;
+        if (sortKey === key) sortAsc = !sortAsc;
+        else {{
+          sortKey = key;
+          sortAsc = true;
+        }}
+        render();
+      }});
+    }});
+
+    document.getElementById("save").addEventListener("click", async () => {{
+      if (!selectedSlug) {{
+        setStatus("Select a model first.", false);
+        return;
+      }}
+      const payload = {{
+        key: document.getElementById("key").value,
+        slug: selectedSlug,
+        append_candidate: document.getElementById("appendCandidate").checked,
+      }};
+      try {{
+        const resp = await fetch("/update", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify(payload),
+        }});
+        const data = await resp.json();
+        if (!resp.ok) {{
+          setStatus(data.message || "Update failed.", false);
+          return;
+        }}
+        setStatus(data.message + " (server will stop)");
+      }} catch (err) {{
+        setStatus(`Request failed: ${{err}}`, false);
+      }}
+    }});
+
+    render();
+  </script>
+</body>
+</html>
+"""
+
+
+class ModelSelectorHandler(BaseHTTPRequestHandler):
+    models: list[dict] = []
+    env_path = Path(".env")
+
+    def _json(self, status: HTTPStatus, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path != "/":
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        page = build_page(self.models, self.env_path).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/update":
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
         try:
-            idx = int(answer)
-        except ValueError:
-            idx = -1
-        if 1 <= idx <= max_idx:
-            return idx
-        print("Invalid number.")
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "Invalid JSON payload."})
+            return
+
+        key = payload.get("key")
+        slug = payload.get("slug")
+        append_candidate = bool(payload.get("append_candidate"))
+
+        if key not in ENV_KEYS:
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "Invalid .env key."})
+            return
+
+        known_slugs = {m["id"] for m in self.models}
+        if slug not in known_slugs:
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "Unknown model slug."})
+            return
+
+        update_env_model(self.env_path, key, slug, append_candidate=append_candidate)
+        message = f"Updated {self.env_path} -> {key}={slug}"
+        print(message, flush=True)
+        self._json(HTTPStatus.OK, {"message": message})
+
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--family",
-        action="append",
-        choices=sorted(FAMILIES),
-        help="Filter by family. Repeat to include multiple families.",
-    )
-    parser.add_argument(
-        "--tier",
-        choices=TIERS,
-        help="Filter by dynamic pricing tier (budget/mid/premium).",
-    )
-    parser.add_argument("--limit", type=int, default=50, help="Max table rows to print (0 = all).")
-    parser.add_argument("--interactive", action="store_true", help="Prompt and update .env in place.")
     parser.add_argument("--env-file", default=".env", help="Path to the .env file to update.")
+    parser.add_argument("--json", action="store_true", help="Print fetched model catalog as JSON.")
     parser.add_argument(
-        "--set-key",
-        choices=sorted(ENV_KEYS),
-        help="Non-interactive env key to update (requires --index).",
-    )
-    parser.add_argument(
-        "--index",
-        type=int,
-        help="1-based row index from the printed/filter list to use for env updates.",
-    )
-    parser.add_argument(
-        "--append-candidate",
+        "--no-browser",
         action="store_true",
-        help="When setting CANDIDATE_MODEL_SLUGS, append instead of replace.",
+        help="Do not auto-open a browser tab; print the local URL only.",
     )
-    parser.add_argument("--json", action="store_true", help="Print filtered results as JSON.")
     return parser.parse_args()
+
+
+def serve(models: list[dict], env_path: Path, open_browser: bool) -> None:
+    ModelSelectorHandler.models = models
+    ModelSelectorHandler.env_path = env_path
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), ModelSelectorHandler) as server:
+        host, port = server.server_address
+        url = f"http://{host}:{port}/"
+        print(f"Model selector UI: {url}")
+        if open_browser:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        print("Pick a model in the page to update .env; server exits after one successful write.")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
 
 
 def main() -> None:
     args = parse_args()
-    if args.limit < 0:
-        raise SystemExit("--limit must be >= 0.")
-    if args.interactive and (args.set_key or args.index is not None):
-        raise SystemExit("--interactive cannot be combined with --set-key/--index.")
-    if args.interactive and args.json:
-        raise SystemExit("--interactive cannot be combined with --json.")
-    if args.json and (args.set_key or args.index is not None):
-        raise SystemExit("--json cannot be combined with --set-key/--index.")
-    if args.index is not None and not args.set_key and not args.interactive:
-        raise SystemExit("--index requires --set-key (or use --interactive).")
 
     models = fetch_models()
     assign_pricing_tiers(models)
-    selected = filter_models(models, set(args.family or []), args.tier)
-    if not selected:
-        raise SystemExit("No models matched the requested filters.")
+    models = sorted_models(models)
 
     if args.json:
-        print(json.dumps(selected, indent=2))
+        print(json.dumps(models, indent=2))
         return
 
-    # --index (interactive or not) must resolve against exactly what was printed --
-    # otherwise --limit truncating the table could let an index the user never saw
-    # (e.g. 51+ under the default limit) silently select and write an unrelated model.
-    display_limit = args.limit if args.limit > 0 else None
-    displayed = selected[:display_limit] if display_limit is not None else selected
-    print_table(displayed)
-
-    key = args.set_key
-    index = args.index
-    if args.interactive:
-        key = choose_env_key_interactive()
-        index = choose_index_interactive(len(displayed))
-
-    if key:
-        if index is None:
-            raise SystemExit("--set-key requires --index (or use --interactive).")
-        if not (1 <= index <= len(displayed)):
-            raise SystemExit(f"--index must be between 1 and {len(displayed)} for the displayed rows.")
-        slug = displayed[index - 1]["id"]
-        env_path = Path(args.env_file)
-        update_env_model(env_path, key, slug, append_candidate=args.append_candidate)
-        print(f"Updated {env_path} -> {key}={slug}")
+    serve(models, Path(args.env_file), open_browser=not args.no_browser)
 
 
 if __name__ == "__main__":
