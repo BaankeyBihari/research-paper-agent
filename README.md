@@ -27,6 +27,9 @@ framework, each for a specific reason:
    *same* agent method across multiple candidate models against a reference model's output, via a
    duck-typed `Scorer` interface implemented once (`PaperSimilarityScorer`). The parallel runs, trace
    correlation, and structured `.jsonl` output are NOOA doing the orchestration, not hand-rolled here.
+   `PaperSimilarityScorer` itself is intentionally basic (plain `difflib` text diff, not semantic —
+   see "Reading the scores" below) and will stay that way; this side-quest demonstrates `eval_pipeline`
+   wiring, not scoring quality.
 4. **Long-term memory** (`nooa-memory`, used by `find_similar_papers`). Deliberately narrow: not the
    full agentic surface (`MemoryManager`/`MemoryToolsMixin`, where the agent itself decides what to
    remember via tool calls, with reflection/decay on top) — that's built for agents reasoning across
@@ -216,6 +219,15 @@ sanity check that scores near 1.0), but it under-rewards accurate paraphrasing. 
 ~0.5 isn't necessarily half as good; read the actual summaries side by side, not just the number. Two
 papers is also too small a sample for real conclusions — it's a cost-conscious default, bump
 `COMPARE_NUM_PAPERS` if you want something you'd actually trust.
+
+**`PaperSimilarityScorer` is intentionally basic, and will stay that way.** It's a plain `difflib`
+character-sequence diff, nothing more — no semantic understanding, so a candidate that correctly
+paraphrases a field in different words scores poorly even when the content is right (this is why
+"0/N passed" from `compare_models.py` doesn't mean the candidates are broken — see "Reading the
+scores" above and, if you've hit this, the note in "How this uses NOOA"). Replacing it with something
+semantic (embedding cosine similarity, an LLM judge) is a real, known option, but `compare_models.py`
+is a side demonstrator for trying `eval_pipeline`'s wiring, not the focus of this project — improving
+the scorer itself isn't planned work for the foreseeable future.
 
 ## Known deviations from the original spec, and why
 
