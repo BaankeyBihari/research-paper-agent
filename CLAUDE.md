@@ -53,7 +53,7 @@ with sqlite3.connect('/data/papers/.agent_state.sqlite3') as conn:
 "
 
 # Compare cheaper models against a reference model on the same papers
-# (costs real money -- meta-llama/llama-3.1-70b-instruct is paid; see README):
+# (costs real money -- openai/gpt-4o-mini is paid; see README):
 docker compose exec research-agent python compare_models.py
 ```
 
@@ -119,14 +119,38 @@ background, waits 2s, runs `simulator.py` to seed papers, runs `agent.py` to pro
 across reruns. `nooa start-dev` binds `0.0.0.0:5001` by default (verified).
 
 **`compare_models.py`** is a separate, standalone script (not run by `entrypoint.sh`) for comparing
-model quality/latency against a reference model, using plain `difflib` text similarity instead of
-NOOA's real `nooa eval` (which needs the full monorepo + `uv sync`, not just `pip install nooa`, and
-isn't wired up here). It defines its own throwaway `Agent` subclasses per model slug via
-`make_agent()`, one per model, since `Agent`'s `llm=` binding happens at class-definition time and
-can't be swapped per-instance — `ResearchAgent`'s single class-level `llm` is why `agent.py` only
-ever runs one model per process. Its `summarize_paper` docstring is a deliberate literal copy of `agent.py`'s, not a shared constant —
-simpler to keep in sync by hand for one short prompt than to add an indirection for it. Update both
-together if the prompt changes.
+model quality/latency against a reference model. It runs on NOOA's real `eval_pipeline` package —
+that package isn't on PyPI, but contrary to an earlier assumption here, it does *not* need a full
+monorepo clone + `uv sync`: `util/eval_pipeline/pyproject.toml` is a self-contained `hatchling`
+package with plain PyPI dependencies (its `[tool.uv.sources] nooa = {workspace = true}` line is
+`uv`-only metadata that `pip` ignores), so it installs straight from a git-subdirectory URL, pinned
+to a commit SHA in `requirements.txt` (`eval_pipeline @
+git+https://github.com/NVIDIA-NeMo/labs-OO-Agents.git@<commit>#subdirectory=util/eval_pipeline`) —
+this is also why the `Dockerfile` installs `git`. `ResearchAgent` (from `agent.py`, unmodified) is
+handed to `eval_pipeline.Evaluator` directly as `agent_class`, since `nooa.agent.Agent.__init__`
+supports a per-instance `llm=` override (instance → class → parent resolution) — `eval_pipeline`'s
+own `agent_from_spec` relies on exactly that (`cls(llm=client)`). The script still runs the reference
+model synchronously per paper first (to supply `expected` values `Evaluator.add_test` needs up
+front), then scores candidates with a custom `PaperSimilarityScorer` (`eval_pipeline`'s duck-typed
+`Scorer.score(ctx) -> ScoreResult` interface) porting the same per-field `difflib` text-similarity
+logic the script used before this was wired up to `eval_pipeline` — stdlib only, no extra API calls,
+no LLM-judge self-bias risk. Results land in a `.noo-eval.jsonl` file under
+`/data/papers/eval_results/` — a separate, offline copy, *not* what the trace viewer's Evaluations
+tab actually reads. That tab is backed by the viewer's OTLP store, and `eval_pipeline` posts eval
+spans to it live while `Evaluator.run()` executes (same `localhost:5001/v1/traces` endpoint
+`entrypoint.sh` already runs `nooa start-dev` on), so the tab only populates if the viewer was
+already reachable during the run — a `.jsonl` file produced with no viewer connected won't show up
+there later. `REFERENCE_MODEL_SLUG`/`CANDIDATE_MODEL_SLUGS`/`COMPARE_NUM_PAPERS` are forwarded
+into the container via `docker-compose.yml`'s `environment:` block, alongside `ACTIVE_MODEL_SLUG` —
+without that, `.env` overrides for `compare_models.py` are silently ignored (a real bug found during
+live verification; see "Verified live" below). The script also works around a genuine `eval_pipeline`
+bug: `Evaluator.run()` (pinned commit `8622fc4`) raises a `pydantic.ValidationError` when using the
+plain-Python `Evaluator(models={...})` API documented in its own README, because `_model_metadata`
+(needed to build the run's metadata line) is only ever populated by the YAML/`from_config` path —
+`compare_models.py` pre-populates `evaluator._model_metadata` directly before calling `run()` as a
+workaround; filed upstream as
+[NVIDIA-NeMo/labs-OO-Agents#152](https://github.com/NVIDIA-NeMo/labs-OO-Agents/issues/152) —
+drop the workaround once a fix lands.
 
 **Config surface**: `PAPERS_DIR` (default `/data/papers`), `ACTIVE_MODEL_SLUG`, `OPENROUTER_API_KEY`
 — all read from the environment, set via `docker-compose.yml` from `.env`.
@@ -135,11 +159,19 @@ together if the prompt changes.
 
 The full pipeline (build → arXiv download → `pypdf` extract → live OpenRouter call →
 SQLite persist → trace viewer via VS Code Dev Containers) has been run end-to-end, including
-`compare_models.py` against the paid `meta-llama/llama-3.1-70b-instruct` reference. Note: `nooa[cli]`
-alone does **not** include the trace viewer — `requirements.txt` needs `nooa[cli,viewer]`, otherwise
-`nooa start-dev` exits immediately with "viewer dependencies are not installed" and, because
-`entrypoint.sh` does `wait "$TRACE_VIEWER_PID"`, the whole container exits once `agent.py` finishes.
-See `README.md`'s "Verified" section for more, including a real prompt-quality issue seen on
-`nemotron-3-nano-30b-a3b` (titles picking up author lists, objectives copied verbatim) that the
-`summarize_paper` docstring now explicitly guards against, and the Evaluations/Memory tabs being
-empty by design (not wired up — see `compare_models.py` and the SQLite-vs-`nooa-memory` note above).
+`compare_models.py` against `eval_pipeline` with a paid `openai/gpt-4o-mini` reference. Note:
+`nooa[cli]` alone does **not** include the trace viewer — `requirements.txt` needs
+`nooa[cli,viewer]`, otherwise `nooa start-dev` exits immediately with "viewer dependencies are not
+installed" and, because `entrypoint.sh` does `wait "$TRACE_VIEWER_PID"`, the whole container exits
+once `agent.py` finishes. See `README.md`'s "Verified" section for more, including a real
+prompt-quality issue seen on `nemotron-3-nano-30b-a3b` (titles picking up author lists, objectives
+copied verbatim) that the `summarize_paper` docstring now explicitly guards against. The Evaluations
+tab is populated by `compare_models.py`'s real `eval_pipeline` runs; the Memory tab is still empty by
+design (not wired up — see the SQLite-vs-`nooa-memory` note above).
+
+`meta-llama/llama-3.1-70b-instruct` was `compare_models.py`'s original reference-model default, but
+live verification found it reliably fails to return structured output under NOOA's tool-calling
+strategy via OpenRouter, regardless of paper content (reproduces on both severely corrupted and
+clean PDF text) — a real model/provider incompatibility, not a bug in this repo's code. Default
+switched to `openai/gpt-4o-mini`. Separately, OpenRouter has discontinued that model's free tier
+entirely (`:free` now 404s), so the old cost-saving suffix no longer applies to it either way.

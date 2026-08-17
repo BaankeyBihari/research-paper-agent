@@ -1,4 +1,10 @@
-"""Downloads a few random recent arXiv papers into /data/papers for the agent to find."""
+"""Downloads recent (or specific) arXiv papers into /data/papers for the agent to find.
+
+By default, fetches a few random recent papers. Set ARXIV_PAPER_IDS (comma-separated
+arXiv IDs, versioned or not) to fetch specific papers instead. Set NUM_PAPERS to fetch
+that many random papers regardless -- NUM_PAPERS takes precedence over ARXIV_PAPER_IDS
+when both are set.
+"""
 
 import os
 import random
@@ -13,9 +19,55 @@ ARXIV_API = "http://export.arxiv.org/api/query"
 CATEGORIES = ["cs.AI", "cs.CL", "cs.LG", "stat.ML"]
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
+def _parse_int_env(name: str) -> int | None:
+    """Parse an optional integer env var, failing with a clear message rather than
+    a raw ValueError traceback if it's set to something non-numeric."""
+    raw = os.environ.get(name) or None
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SystemExit(f"{name}={raw!r} is not a valid integer") from None
+    if value < 0:
+        raise SystemExit(f"{name}={raw!r} must not be negative")
+    return value
+
+
+NUM_PAPERS = _parse_int_env("NUM_PAPERS")
+ARXIV_PAPER_IDS = [i.strip() for i in os.environ.get("ARXIV_PAPER_IDS", "").split(",") if i.strip()]
+
+
+def _download_entries(entries: list[ET.Element]) -> None:
+    PAPERS_DIR.mkdir(parents=True, exist_ok=True)
+    for entry in entries:
+        pdf_link = None
+        for link in entry.findall("atom:link", ATOM_NS):
+            if link.attrib.get("title") == "pdf" or link.attrib.get("type") == "application/pdf":
+                pdf_link = link.attrib["href"]
+                break
+        if not pdf_link:
+            continue
+
+        # Everything after ".../abs/" is the arXiv ID itself. New-style IDs (e.g.
+        # "2608.11597v1") have no further "/", but old-style pre-2007 IDs are
+        # "<archive>/<number>" (e.g. "hep-th/9901001v1") -- the archive prefix must be
+        # kept and encoded into the filename, not discarded, since two different
+        # archives can share the same numeric suffix (hep-th/9901001 vs hep-ph/9901001
+        # are different papers) and dropping it would silently collide their filenames.
+        arxiv_id = entry.find("atom:id", ATOM_NS).text.split("abs/", 1)[-1]
+        dest = PAPERS_DIR / f"{arxiv_id.replace('/', '_')}.pdf"
+        if dest.exists():
+            continue
+
+        pdf_resp = requests.get(pdf_link, timeout=60)
+        pdf_resp.raise_for_status()
+        dest.write_bytes(pdf_resp.content)
+        print(f"Downloaded {dest.name}")
+        time.sleep(1)  # be polite to arXiv
+
 
 def fetch_random_papers(n: int = 3) -> None:
-    PAPERS_DIR.mkdir(parents=True, exist_ok=True)
     category = random.choice(CATEGORIES)
     start = random.randint(0, 500)
     params = {
@@ -27,30 +79,21 @@ def fetch_random_papers(n: int = 3) -> None:
     }
     resp = requests.get(ARXIV_API, params=params, timeout=30)
     resp.raise_for_status()
-
     root = ET.fromstring(resp.text)
-    entries = root.findall("atom:entry", ATOM_NS)
+    _download_entries(root.findall("atom:entry", ATOM_NS))
 
-    for entry in entries:
-        pdf_link = None
-        for link in entry.findall("atom:link", ATOM_NS):
-            if link.attrib.get("title") == "pdf" or link.attrib.get("type") == "application/pdf":
-                pdf_link = link.attrib["href"]
-                break
-        if not pdf_link:
-            continue
 
-        arxiv_id = entry.find("atom:id", ATOM_NS).text.rsplit("/", 1)[-1]
-        dest = PAPERS_DIR / f"{arxiv_id}.pdf"
-        if dest.exists():
-            continue
-
-        pdf_resp = requests.get(pdf_link, timeout=60)
-        pdf_resp.raise_for_status()
-        dest.write_bytes(pdf_resp.content)
-        print(f"Downloaded {dest.name}")
-        time.sleep(1)  # be polite to arXiv
+def fetch_specific_papers(arxiv_ids: list[str]) -> None:
+    resp = requests.get(ARXIV_API, params={"id_list": ",".join(arxiv_ids)}, timeout=30)
+    resp.raise_for_status()
+    root = ET.fromstring(resp.text)
+    _download_entries(root.findall("atom:entry", ATOM_NS))
 
 
 if __name__ == "__main__":
-    fetch_random_papers(3)
+    if NUM_PAPERS is not None:
+        fetch_random_papers(NUM_PAPERS)
+    elif ARXIV_PAPER_IDS:
+        fetch_specific_papers(ARXIV_PAPER_IDS)
+    else:
+        fetch_random_papers(3)

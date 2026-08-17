@@ -3,3 +3,4 @@ nooa-memory
 pypdf
 litellm
 requests
+eval_pipeline @ git+https://github.com/NVIDIA-NeMo/labs-OO-Agents.git@8622fc4d8744377e73a54521af8abd1ac36fb201#subdirectory=util/eval_pipeline
