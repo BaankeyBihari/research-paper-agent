@@ -66,6 +66,22 @@ https://github.com/BaankeyBihari/research-paper-agent — `origin` is HTTPS, not
 this machine isn't registered with GitHub (`git@github.com: Permission denied (publickey)`), so
 `git push` over SSH fails here; HTTPS works via the stored `gh`/credential-manager auth.
 
+## Workflow
+
+Track remaining/planned work as GitHub issues on this repo (`gh issue create` / `gh issue list`)
+rather than as TODOs in code or docs — that's the source of truth for what's left to do and its
+status. Make changes via a feature branch + PR (`gh pr create`), not direct commits to `main`:
+
+```bash
+git checkout -b <short-descriptive-branch-name>
+# ...make changes, commit...
+git push -u origin <branch-name>
+gh pr create --fill
+```
+
+Reference the relevant issue number in the PR description (`Closes #N`) so it closes automatically
+on merge.
+
 ## Architecture
 
 **`agent.py`** is the entire application. `ResearchAgent(Agent, llm=llm)` follows NOOA's core
