@@ -4,6 +4,10 @@ services:
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       ACTIVE_MODEL_SLUG: ${ACTIVE_MODEL_SLUG:-nvidia/nemotron-3-nano-30b-a3b}
+      # compare_models.py only -- see .env.example
+      REFERENCE_MODEL_SLUG: ${REFERENCE_MODEL_SLUG:-openai/gpt-4o-mini}
+      CANDIDATE_MODEL_SLUGS: ${CANDIDATE_MODEL_SLUGS:-nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning}
+      COMPARE_NUM_PAPERS: ${COMPARE_NUM_PAPERS:-2}
     volumes:
       - papers_data:/data/papers
       - ./traces:/root/.config/nooa

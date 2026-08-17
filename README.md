@@ -80,28 +80,36 @@ ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build
 ## Comparing models against a reference
 
 `compare_models.py` runs the same papers through a stronger "reference" model and one or more
-cheaper "candidate" models, then scores each candidate against the reference's output with plain
-text similarity (`difflib`, stdlib only — no extra API calls, no LLM-judge self-bias risk).
+cheaper "candidate" models via NOOA's real `eval_pipeline` package, then scores each candidate
+against the reference's output with plain text similarity (`difflib`, stdlib only — no extra API
+calls, no LLM-judge self-bias risk).
 
 ```bash
 docker compose exec research-agent python compare_models.py
 ```
 
-Defaults: 2 papers, reference = `meta-llama/llama-3.1-70b-instruct`, candidates = both Nemotron
-tiers. Override via env vars: `COMPARE_NUM_PAPERS`, `REFERENCE_MODEL_SLUG`,
-`CANDIDATE_MODEL_SLUGS` (comma-separated). Full results are saved to
-`/data/papers/model_comparison.json`.
+Defaults: 2 papers, reference = `openai/gpt-4o-mini`, candidates = both Nemotron tiers. Override via
+env vars: `COMPARE_NUM_PAPERS`, `REFERENCE_MODEL_SLUG`, `CANDIDATE_MODEL_SLUGS` (comma-separated). A
+summary prints to stdout; the full run is written as a `.noo-eval.jsonl` file under
+`/data/papers/eval_results/`, which the trace viewer's **Evaluations** tab reads directly (see
+"Viewing results" above for reaching the viewer).
 
-**This is not the real NOOA eval framework** (that would populate the viewer's Evaluations tab) —
-`nooa eval` is a thin passthrough to an `eval_pipeline` package that isn't published to PyPI at all;
-per its own error message it "ships with the nemo-oo-agents monorepo workspace" and would need
-cloning the full GitHub repo and building with `uv sync` instead of our current `pip install`-based
-image. `compare_models.py` gets you the actual comparison without that added weight.
+`eval_pipeline` is not on PyPI, but it doesn't need a full monorepo clone either: it installs
+straight from a git subdirectory URL (`pip install "eval_pipeline @
+git+https://github.com/NVIDIA-NeMo/labs-OO-Agents.git@<commit>#subdirectory=util/eval_pipeline"`,
+pinned in `requirements.txt` to a specific commit), since its `pyproject.toml` is a self-contained
+`hatchling` package with plain PyPI dependencies. `agent.py`'s `ResearchAgent` is handed to it
+directly as `agent_class` — no throwaway per-model subclass needed, since NOOA's `Agent` supports a
+per-instance `llm=` override.
 
-**Cost note**: `meta-llama/llama-3.1-70b-instruct` (no `:free` suffix) is paid — $0.40/M tokens in
-and out on OpenRouter, unlike the free-tier Nemotron models. Each run costs 1 reference call per
-paper. Use `REFERENCE_MODEL_SLUG=meta-llama/llama-3.1-70b-instruct:free` to avoid that if you'd
-rather trade cost for lower-priority routing.
+**Cost note**: `openai/gpt-4o-mini` is paid (see OpenRouter's pricing page for current rates), unlike
+the free-tier Nemotron candidate models. Each run costs 1 reference call per paper; use
+`COMPARE_NUM_PAPERS` to bound it. `meta-llama/llama-3.1-70b-instruct` (an earlier default here) was
+dropped after live verification: it reliably fails to return structured output under NOOA's
+tool-calling strategy via OpenRouter — reproduces across multiple papers regardless of content, so
+it's a model/provider incompatibility, not a prompt or extraction issue. Also note OpenRouter has
+discontinued the free tier for that model entirely (`:free` now 404s), so that cost-saving trick no
+longer applies to it either way.
 
 **Reading the scores**: `difflib` similarity is sequence/character-based, not semantic — it
 correctly catches gross divergence (and titles, which are supposed to match verbatim, are a good
@@ -135,10 +143,24 @@ Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on
   **but** its data API 403s from outside the container over a published Docker port — the page loads
   and looks blank. The `.devcontainer` workaround (see "Viewing results" above) has been confirmed
   working from an actual VS Code Dev Containers session: traces show up correctly.
-- The trace viewer's **Evaluations** and **Memory** tabs will look empty, and that's expected, not
-  broken: Evaluations is backed by `nooa eval` runs (we don't run one — see `compare_models.py`
-  below for the lighter alternative we built instead), and Memory reads a `nooa_memory.MemoryStore`
-  file that `ResearchAgent` never creates (see the SQLite-vs-`nooa-memory` deviation above).
+- The trace viewer's **Evaluations** tab is populated by real `eval_pipeline` runs — see
+  `compare_models.py` above. The **Memory** tab will still look empty, and that's expected, not
+  broken: it reads a `nooa_memory.MemoryStore` file that `ResearchAgent` never creates (see the
+  SQLite-vs-`nooa-memory` deviation above).
+- `compare_models.py` confirmed end-to-end against `eval_pipeline` (both a free-tier dev pass and a
+  paid confirmation pass with `openai/gpt-4o-mini`): reference summarization, `Evaluator.add_test`,
+  candidate scoring via a custom `PaperSimilarityScorer`, and a well-formed `.noo-eval.jsonl` output
+  file (verified metadata/result/completion lines and per-field score breakdowns) written to
+  `localhost:5001`'s OTLP endpoint, which the run log confirmed as reachable (`Viewer:
+  http://localhost:5001/eval/experiment/...` printed, meaning `eval_pipeline`'s health probe
+  succeeded). Two bugs surfaced and were fixed along the way: `docker-compose.yml` wasn't forwarding
+  `REFERENCE_MODEL_SLUG`/`CANDIDATE_MODEL_SLUGS`/`COMPARE_NUM_PAPERS` into the container despite
+  `.env.example` documenting them (now fixed); and `eval_pipeline`'s own `Evaluator.run()` (commit
+  `8622fc4`, the version pinned in `requirements.txt`) raises a `pydantic.ValidationError` building
+  its run-metadata line when using its documented plain-Python API (`Evaluator(models={...})`) rather
+  than the YAML/`from_config` path — `_model_metadata` is only ever populated by the latter.
+  `compare_models.py` works around this by pre-populating `evaluator._model_metadata` directly; worth
+  removing if a future `eval_pipeline` release fixes it upstream.
 
 One tuning note from the live run: on `nemotron-3-nano-30b-a3b`, the first version of the
 `summarize_paper` docstring sometimes produced a `title` containing the full author list, and a

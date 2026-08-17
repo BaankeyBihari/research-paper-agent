@@ -1,120 +1,112 @@
 """Compares cheaper models against a stronger reference model on the same papers.
 
-Runs summarize_paper across REFERENCE_SLUG and CANDIDATE_SLUGS for each paper, treats
-the reference model's output as a silver-standard answer, and scores the candidates
-against it with simple text similarity (difflib, stdlib only -- no extra API calls or
-LLM-judge circularity). Prints a per-paper report and an aggregate summary, and saves
-the full report as JSON next to the papers.
+Runs summarize_paper across REFERENCE_SLUG and CANDIDATE_SLUGS for each paper via
+eval_pipeline.Evaluator, treating the reference model's output as a silver-standard
+answer and scoring the candidates against it with a difflib-based text-similarity
+scorer (stdlib only -- no extra API calls or LLM-judge circularity). Results are
+written to a .noo-eval.jsonl file under PAPERS_DIR, viewable in the trace viewer's
+Evaluations tab, and summarized on stdout.
 
 Usage:
     python compare_models.py
     COMPARE_NUM_PAPERS=5 python compare_models.py
-    REFERENCE_MODEL_SLUG=meta-llama/llama-3.1-70b-instruct:free python compare_models.py
+    REFERENCE_MODEL_SLUG=anthropic/claude-3-5-sonnet python compare_models.py
 """
 
 import asyncio
 import difflib
-import json
 import os
-import time
 from pathlib import Path
 
-from nooa import Agent
+from eval_pipeline import Evaluator, ScoreResult
+from eval_pipeline.models import ScoringContext
 from nooa.unifiedllm.registry import get_llm_client
 
-from agent import PAPERS_DIR, PaperSummary, extract_pdf_text
+from agent import PAPERS_DIR, PaperSummary, ResearchAgent, extract_pdf_text
 
 NUM_PAPERS = int(os.environ.get("COMPARE_NUM_PAPERS", "2"))
-REFERENCE_SLUG = os.environ.get("REFERENCE_MODEL_SLUG", "meta-llama/llama-3.1-70b-instruct")
+# meta-llama/llama-3.1-70b-instruct (the original default) consistently fails to
+# return valid structured output under NOOA's codeact tool-calling strategy via
+# OpenRouter -- reproduces across multiple papers, unrelated to content/extraction
+# quality. gpt-4o-mini is a verified-working, inexpensive substitute.
+REFERENCE_SLUG = os.environ.get("REFERENCE_MODEL_SLUG", "openai/gpt-4o-mini")
 CANDIDATE_SLUGS = os.environ.get(
     "CANDIDATE_MODEL_SLUGS",
     "nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning",
 ).split(",")
-MODEL_SLUGS = [REFERENCE_SLUG, *CANDIDATE_SLUGS]
 
-def make_agent(model_slug: str) -> Agent:
-    """Build a single-purpose Agent bound to model_slug, matching ResearchAgent's summarize_paper.
-
-    The docstring below is kept identical to agent.py's summarize_paper -- update both together.
-    """
-    llm = get_llm_client(f"openrouter/{model_slug}")
-
-    class _CompareAgent(Agent, llm=llm):
-        """You are a meticulous research assistant that reads academic papers and extracts structured findings."""
-
-        async def summarize_paper(self, text: str) -> PaperSummary:
-            """Read the paper text and extract structured findings.
-
-            - title: the paper's title only, verbatim. Never include author names or affiliations.
-            - main_objective: a one- or two-sentence synthesis, in your own words, of the problem the
-              paper addresses and what it sets out to do. Do not copy a sentence verbatim from the text.
-            - key_methodology: a concise description of the core method/approach used.
-            - resulting_metrics: the key quantitative results reported, with units/context (e.g.
-              "98.5% accuracy on X benchmark"), or "not reported" if the excerpt doesn't include any.
-            """
-            ...
-
-    return _CompareAgent()
+PAPER_SUMMARY_FIELDS = ["title", "main_objective", "key_methodology", "resulting_metrics"]
 
 
-def similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+class PaperSimilarityScorer:
+    """Scores a candidate PaperSummary against a reference one via per-field difflib ratio."""
 
-
-def score_against_reference(candidate: PaperSummary, reference: PaperSummary) -> dict:
-    fields = ["title", "main_objective", "key_methodology", "resulting_metrics"]
-    scores = {f: round(similarity(getattr(candidate, f), getattr(reference, f)), 3) for f in fields}
-    scores["overall"] = round(sum(scores.values()) / len(fields), 3)
-    return scores
-
-
-async def compare_paper(pdf_path: Path, agents: dict[str, Agent]) -> dict:
-    text = extract_pdf_text(pdf_path)
-    results = {}
-    for slug, agent in agents.items():
-        start = time.perf_counter()
-        summary = await agent.summarize_paper(text)
-        results[slug] = {"summary": summary, "elapsed_s": round(time.perf_counter() - start, 2)}
-
-    reference = results[REFERENCE_SLUG]["summary"]
-    report = {"filename": pdf_path.name, "reference_model": REFERENCE_SLUG, "results": {}}
-    for slug, r in results.items():
-        entry = {"elapsed_s": r["elapsed_s"], "summary": r["summary"].model_dump()}
-        if slug != REFERENCE_SLUG:
-            entry["similarity_vs_reference"] = score_against_reference(r["summary"], reference)
-        report["results"][slug] = entry
-    return report
-
-
-def print_aggregate_summary(reports: list[dict]) -> None:
-    print("\n=== Aggregate summary ===")
-    ref_avg_latency = sum(r["results"][REFERENCE_SLUG]["elapsed_s"] for r in reports) / len(reports)
-    print(f"{REFERENCE_SLUG} (reference): avg latency = {ref_avg_latency:.2f}s")
-    for slug in CANDIDATE_SLUGS:
-        avg_overall = sum(r["results"][slug]["similarity_vs_reference"]["overall"] for r in reports) / len(reports)
-        avg_latency = sum(r["results"][slug]["elapsed_s"] for r in reports) / len(reports)
-        print(f"{slug}: avg similarity to reference = {avg_overall:.3f}, avg latency = {avg_latency:.2f}s")
+    def score(self, ctx: ScoringContext) -> ScoreResult:
+        field_scores = {
+            field: round(
+                difflib.SequenceMatcher(
+                    None,
+                    getattr(ctx.expected, field).lower(),
+                    getattr(ctx.actual, field).lower(),
+                ).ratio(),
+                3,
+            )
+            for field in PAPER_SUMMARY_FIELDS
+        }
+        overall = round(sum(field_scores.values()) / len(field_scores), 3)
+        return ScoreResult(
+            score=overall,
+            reasoning=f"Average field similarity to reference: {overall}",
+            metadata=field_scores,
+        )
 
 
 async def main() -> None:
     papers = sorted(PAPERS_DIR.glob("*.pdf"))[:NUM_PAPERS]
     if not papers:
         raise SystemExit(f"No PDFs found in {PAPERS_DIR}; run simulator.py first.")
+    paper_texts: dict[Path, str] = {p: extract_pdf_text(p) for p in papers}
 
-    agents = {slug: make_agent(slug) for slug in MODEL_SLUGS}
+    print(f"Running reference model ({REFERENCE_SLUG}) on {len(papers)} paper(s)...", flush=True)
+    reference_agent = ResearchAgent(llm=get_llm_client(f"openrouter/{REFERENCE_SLUG}"))
+    reference_summaries: dict[Path, PaperSummary] = {
+        path: await reference_agent.summarize_paper(text) for path, text in paper_texts.items()
+    }
 
-    reports = []
-    for pdf_path in papers:
-        print(f"Comparing models on {pdf_path.name}...", flush=True)
-        report = await compare_paper(pdf_path, agents)
-        reports.append(report)
-        print(json.dumps(report, indent=2))
+    models = {slug: get_llm_client(f"openrouter/{slug}") for slug in CANDIDATE_SLUGS}
+    evaluator = Evaluator(
+        models=models, output_dir=PAPERS_DIR / "eval_results", name="compare_models"
+    )
+    # Workaround for an eval_pipeline bug (commit 8622fc4, the version pinned in
+    # requirements.txt): Evaluator.run() writes the run's metadata line from
+    # self._model_metadata, which the plain Python API (this one, per its own README)
+    # never populates -- only the YAML/from_config path does. Without this, run() raises
+    # a pydantic ValidationError building EvalMetadata.models. Pre-populate it directly.
+    evaluator._model_metadata = {slug: {"id": slug, "model_name": slug} for slug in CANDIDATE_SLUGS}
+    evaluator.add_test(
+        name="summarize_paper",
+        agent_class=ResearchAgent,
+        method="summarize_paper",
+        data=[
+            {"kwargs": {"text": paper_texts[path]}, "expected": summary}
+            for path, summary in reference_summaries.items()
+        ],
+        scorers=[PaperSimilarityScorer()],
+    )
 
-    print_aggregate_summary(reports)
+    print(f"Running candidates ({', '.join(CANDIDATE_SLUGS)})...", flush=True)
+    results = await evaluator.run(models=CANDIDATE_SLUGS)
 
-    out_path = PAPERS_DIR / "model_comparison.json"
-    out_path.write_text(json.dumps(reports, indent=2))
-    print(f"\nSaved full comparison to {out_path}")
+    print(f"\nReference model: {REFERENCE_SLUG}")
+    print(results.summary())
+    for slug in CANDIDATE_SLUGS:
+        scores = [
+            r.scores["PaperSimilarityScorer"].score for r in results.results if r.model == slug
+        ]
+        if scores:
+            print(f"{slug}: avg similarity to reference = {sum(scores) / len(scores):.3f} ({len(scores)} papers)")
+    if results.output_file:
+        print(f"\nFull results: {results.output_file} (viewable in the trace viewer's Evaluations tab)")
 
 
 if __name__ == "__main__":
