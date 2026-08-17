@@ -25,22 +25,39 @@ from nooa.unifiedllm.registry import get_llm_client
 
 from agent import PAPERS_DIR, PaperSummary, ResearchAgent, extract_pdf_text, select_papers
 
+def _parse_int_env(name: str) -> int | None:
+    """Parse an optional integer env var, failing with a clear message rather than
+    a raw ValueError traceback if it's set to something non-numeric."""
+    raw = os.environ.get(name) or None
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"{name}={raw!r} is not a valid integer") from None
+
+
 COMPARE_ARXIV_PAPER_IDS = [
     i.strip() for i in os.environ.get("COMPARE_ARXIV_PAPER_IDS", "").split(",") if i.strip()
 ]
-_num_papers_env = os.environ.get("COMPARE_NUM_PAPERS") or None
 # Default to 2 papers only when neither knob is set, to preserve today's behavior --
 # an explicit COMPARE_ARXIV_PAPER_IDS with no count should use exactly that list.
-NUM_PAPERS = int(_num_papers_env) if _num_papers_env else (None if COMPARE_ARXIV_PAPER_IDS else 2)
+NUM_PAPERS = _parse_int_env("COMPARE_NUM_PAPERS")
+if NUM_PAPERS is None and not COMPARE_ARXIV_PAPER_IDS:
+    NUM_PAPERS = 2
 # meta-llama/llama-3.1-70b-instruct (the original default) consistently fails to
 # return valid structured output under NOOA's codeact tool-calling strategy via
 # OpenRouter -- reproduces across multiple papers, unrelated to content/extraction
 # quality. gpt-4o-mini is a verified-working, inexpensive substitute.
 REFERENCE_SLUG = os.environ.get("REFERENCE_MODEL_SLUG", "openai/gpt-4o-mini")
-CANDIDATE_SLUGS = os.environ.get(
-    "CANDIDATE_MODEL_SLUGS",
-    "nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning",
-).split(",")
+CANDIDATE_SLUGS = [
+    s.strip()
+    for s in os.environ.get(
+        "CANDIDATE_MODEL_SLUGS",
+        "nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3.5-lightning",
+    ).split(",")
+    if s.strip()
+]
 
 PAPER_SUMMARY_FIELDS = list(PaperSummary.model_fields)
 

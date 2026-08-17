@@ -19,8 +19,19 @@ ARXIV_API = "http://export.arxiv.org/api/query"
 CATEGORIES = ["cs.AI", "cs.CL", "cs.LG", "stat.ML"]
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
-_num_papers_env = os.environ.get("NUM_PAPERS") or None
-NUM_PAPERS = int(_num_papers_env) if _num_papers_env else None
+def _parse_int_env(name: str) -> int | None:
+    """Parse an optional integer env var, failing with a clear message rather than
+    a raw ValueError traceback if it's set to something non-numeric."""
+    raw = os.environ.get(name) or None
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"{name}={raw!r} is not a valid integer") from None
+
+
+NUM_PAPERS = _parse_int_env("NUM_PAPERS")
 ARXIV_PAPER_IDS = [i.strip() for i in os.environ.get("ARXIV_PAPER_IDS", "").split(",") if i.strip()]
 
 
