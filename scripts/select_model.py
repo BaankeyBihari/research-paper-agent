@@ -439,7 +439,7 @@ class ModelSelectorHandler(BaseHTTPRequestHandler):
         slug = payload.get("slug")
         append_candidate = bool(payload.get("append_candidate"))
 
-        if key not in ENV_KEYS:
+        if not isinstance(key, str) or key not in ENV_KEYS:
             self._json(HTTPStatus.BAD_REQUEST, {"message": "Invalid .env key."})
             return
 
