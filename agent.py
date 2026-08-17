@@ -199,7 +199,10 @@ class ResearchAgent(Agent, llm=llm):
                 ),
             )
         self.papers_processed += 1
-        self._record_memory(filename, summary)
+        try:
+            self._record_memory(filename, summary)
+        except Exception:
+            pass
 
     def _record_memory(self, filename: str, summary: PaperSummary) -> None:
         """Embed the paper's summary and store it for later semantic similarity search.
