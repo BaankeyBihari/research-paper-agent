@@ -10,6 +10,38 @@ OpenRouter models on summarization quality/speed.
 and Resulting Metrics via an LLM call, and records the result in a local SQLite file so re-runs (even
 under a different model) don't reprocess the same paper.
 
+## How this uses NOOA
+
+NOOA isn't used as one monolithic thing — this project leans on five distinct surfaces of the
+framework, each for a specific reason:
+
+1. **Core agent pattern.** `ResearchAgent(Agent, llm=llm)` follows NOOA's fields-are-state,
+   methods-are-capabilities convention. `summarize_paper`'s body is literally `...` — its docstring
+   *is* the prompt, and NOOA's runtime drives the LLM call and validates the response against a
+   Pydantic model (`PaperSummary`) automatically. Everything else (paper selection, dedup,
+   persistence) is plain deterministic Python around that one agentic method.
+2. **Model-agnostic LLM routing** (`nooa.unifiedllm.registry.get_llm_client`). Built once at module
+   load from `ACTIVE_MODEL_SLUG` (any OpenRouter slug), so swapping models is a pure env-var change
+   — no code touch. This is what makes "Switching models" and "Comparing models" below possible.
+3. **Evaluation harness** (`eval_pipeline`, used by `compare_models.py`). NOOA's `Evaluator` runs the
+   *same* agent method across multiple candidate models against a reference model's output, via a
+   duck-typed `Scorer` interface implemented once (`PaperSimilarityScorer`). The parallel runs, trace
+   correlation, and structured `.jsonl` output are NOOA doing the orchestration, not hand-rolled here.
+4. **Long-term memory** (`nooa-memory`, used by `find_similar_papers`). Deliberately narrow: not the
+   full agentic surface (`MemoryManager`/`MemoryToolsMixin`, where the agent itself decides what to
+   remember via tool calls, with reflection/decay on top) — that's built for agents reasoning across
+   long horizons, which doesn't fit a one-shot "extract a summary" agent. Instead this uses
+   `MemoryStore`/`Embedder` directly as building blocks: embed each summary, store it, `knn()` search
+   it. See "Known deviations" below for the full reasoning.
+5. **Observability** (auto-tracing + the trace viewer). Every method call and LLM call on a NOOA
+   `Agent` is traced automatically, no code here does this. `nooa start-dev` serves that data through
+   a viewer with three tabs, two of which this project actually populates: **Evaluations** (fed by
+   `eval_pipeline`, #3 above) and **Memory** (fed by `MemoryStore`, #4 above).
+
+The throughline: NOOA supplies the LLM-calling, evaluating, and memory infrastructure as composable
+pieces; this project's own code is the deterministic scaffolding around a few narrow, deliberate uses
+of each piece — not maximal use of the framework, but use of the parts that actually fit the problem.
+
 ## Setup
 
 ```bash
