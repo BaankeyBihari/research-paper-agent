@@ -1,4 +1,4 @@
-nooa[cli]
+nooa[cli,viewer]
 nooa-memory
 pypdf
 litellm

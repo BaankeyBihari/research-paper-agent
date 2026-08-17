@@ -59,17 +59,21 @@ ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build
   with confidence. Instead, `ResearchAgent` tracks processed papers via a plain `sqlite3` table
   (`processed_papers`) in the same `/data/papers` volume — deterministic, and it's what actually
   makes the persistence test in step 3 above work.
+
 ## Verified
 
-The image builds cleanly and everything that doesn't require a live OpenRouter call has been
-exercised directly in the built container:
-- `nooa start-dev --help` confirms it already binds `0.0.0.0:5001` by default, so `entrypoint.sh`'s
-  explicit `--host`/`--port` flags are redundant but harmless.
-- `agent.py` imports cleanly and `ResearchAgent`'s deterministic SQLite dedup/lookup logic
-  (`get_local_papers`, `lookup_paper`) works correctly against an empty state.
-- `simulator.py` successfully downloads real papers from the live arXiv API, and `pypdf` extracts
-  text from them correctly.
+Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on OpenRouter:
+- Image builds cleanly; `nooa start-dev` binds `0.0.0.0:5001` by default and the trace viewer is
+  reachable at `localhost:5001` (`GET /` returns 200) while the container runs.
+- `simulator.py` downloads real papers from the live arXiv API; `pypdf` extracts their text.
+- `summarize_paper` produces valid `PaperSummary` objects from real model output.
+- The SQLite `processed_papers` table persists correctly across `docker compose down`/`up` cycles
+  (i.e. across the same volume you'd reuse when switching `ACTIVE_MODEL_SLUG`), confirming the
+  cross-model persistence test in step 3 actually holds.
 
-**Not yet verified**: an actual OpenRouter model call (`summarize_paper`) and a live trace-viewer
-session, since both need your `OPENROUTER_API_KEY`. Run `docker compose up --build` and check
-`localhost:5001` to confirm end-to-end.
+One tuning note from the live run: on `nemotron-3-nano-30b-a3b`, the first version of the
+`summarize_paper` docstring sometimes produced a `title` containing the full author list, and a
+`main_objective` that was a verbatim sentence lift rather than a synthesis. The docstring now gives
+explicit per-field instructions (title = paper title only, no authors; objective = synthesized, not
+copied; metrics = "not reported" when absent) — this measurably cleaned up the output in a follow-up
+run. Worth watching for the same failure mode if you try other budget/free-tier models.

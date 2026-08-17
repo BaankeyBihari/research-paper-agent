@@ -95,7 +95,15 @@ class ResearchAgent(Agent, llm=llm):
         self.papers_processed += 1
 
     async def summarize_paper(self, text: str) -> PaperSummary:
-        """Read the paper text and extract its Main Objective, Key Methodology, and Resulting Metrics."""
+        """Read the paper text and extract structured findings.
+
+        - title: the paper's title only, verbatim. Never include author names or affiliations.
+        - main_objective: a one- or two-sentence synthesis, in your own words, of the problem the
+          paper addresses and what it sets out to do. Do not copy a sentence verbatim from the text.
+        - key_methodology: a concise description of the core method/approach used.
+        - resulting_metrics: the key quantitative results reported, with units/context (e.g.
+          "98.5% accuracy on X benchmark"), or "not reported" if the excerpt doesn't include any.
+        """
         ...
 
     async def process_pending_papers(self) -> list[PaperSummary]:
