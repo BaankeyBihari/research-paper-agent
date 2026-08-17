@@ -166,7 +166,7 @@ def sorted_models(models: list[dict]) -> list[dict]:
 
 
 def build_page(models: list[dict], env_path: Path) -> str:
-    models_json = json.dumps(models)
+    models_json = json.dumps(models).replace("</", "<\\/")
     env_display = escape(str(env_path))
     return f"""<!doctype html>
 <html lang=\"en\">
