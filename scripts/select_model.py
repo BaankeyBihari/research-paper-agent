@@ -43,12 +43,26 @@ def fetch_models() -> list[dict]:
     try:
         resp = requests.get(OPENROUTER_MODELS_URL, timeout=30)
         resp.raise_for_status()
+        payload = resp.json()
     except requests.RequestException as exc:
         raise SystemExit(f"Failed to fetch {OPENROUTER_MODELS_URL}: {exc}") from exc
-    payload = resp.json()
-    data = payload.get("data", [])
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"{OPENROUTER_MODELS_URL} did not return valid JSON (got a non-JSON response, "
+            f"e.g. an HTML error/proxy page): {exc}"
+        ) from exc
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        raise SystemExit(
+            f"Unexpected response shape from {OPENROUTER_MODELS_URL}: expected an object with "
+            "a 'data' list"
+        )
+
     models: list[dict] = []
     for row in data:
+        if not isinstance(row, dict):
+            continue
         model_id = row.get("id")
         if not model_id:
             continue
@@ -148,7 +162,11 @@ def write_env_value(env_path: Path, key: str, value: str) -> None:
         if lines and lines[-1].strip():
             lines.append("")
         lines.append(f"{key}={value}")
-    env_path.write_text(newline.join(lines) + newline, encoding="utf-8")
+    # write_bytes (not write_text) deliberately -- write_text opens in text mode, which on
+    # Windows re-translates the "\r\n" this function already inserted for CRLF files into
+    # "\r\r\n", corrupting the very line endings this is trying to preserve.
+    content = newline.join(lines) + newline
+    env_path.write_bytes(content.encode("utf-8"))
 
 
 def update_env_model(env_path: Path, key: str, slug: str, append_candidate: bool) -> None:
@@ -230,6 +248,8 @@ def main() -> None:
         raise SystemExit("--interactive cannot be combined with --json.")
     if args.json and (args.set_key or args.index is not None):
         raise SystemExit("--json cannot be combined with --set-key/--index.")
+    if args.index is not None and not args.set_key and not args.interactive:
+        raise SystemExit("--index requires --set-key (or use --interactive).")
 
     models = fetch_models()
     assign_pricing_tiers(models)
@@ -239,21 +259,27 @@ def main() -> None:
 
     if args.json:
         print(json.dumps(selected, indent=2))
-    else:
-        print_table(selected, limit=args.limit if args.limit > 0 else None)
+        return
+
+    # --index (interactive or not) must resolve against exactly what was printed --
+    # otherwise --limit truncating the table could let an index the user never saw
+    # (e.g. 51+ under the default limit) silently select and write an unrelated model.
+    display_limit = args.limit if args.limit > 0 else None
+    displayed = selected[:display_limit] if display_limit is not None else selected
+    print_table(displayed)
 
     key = args.set_key
     index = args.index
     if args.interactive:
         key = choose_env_key_interactive()
-        index = choose_index_interactive(len(selected))
+        index = choose_index_interactive(len(displayed))
 
     if key:
         if index is None:
             raise SystemExit("--set-key requires --index (or use --interactive).")
-        if not (1 <= index <= len(selected)):
-            raise SystemExit(f"--index must be between 1 and {len(selected)} for current filters.")
-        slug = selected[index - 1]["id"]
+        if not (1 <= index <= len(displayed)):
+            raise SystemExit(f"--index must be between 1 and {len(displayed)} for the displayed rows.")
+        slug = displayed[index - 1]["id"]
         env_path = Path(args.env_file)
         update_env_model(env_path, key, slug, append_candidate=args.append_candidate)
         print(f"Updated {env_path} -> {key}={slug}")
