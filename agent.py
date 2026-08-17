@@ -12,10 +12,14 @@ from pypdf import PdfReader
 
 from nooa import Agent
 from nooa.unifiedllm.registry import get_llm_client
+from nooa_memory import Memory, MemoryStore, MemoryType
+from nooa_memory.config import EmbeddingConfig
+from nooa_memory.embeddings import get_embedder
 
 MODEL_SLUG = os.environ.get("ACTIVE_MODEL_SLUG", "nvidia/nemotron-3-nano-30b-a3b")
 PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", "/data/papers"))
 STATE_DB = PAPERS_DIR / ".agent_state.sqlite3"
+MEMORY_DB = PAPERS_DIR / ".agent_memory.sqlite3"
 MAX_CHARS = 20_000
 
 def _parse_int_env(name: str) -> int | None:
@@ -37,6 +41,21 @@ NUM_PAPERS = _parse_int_env("NUM_PAPERS")
 ARXIV_PAPER_IDS = [i.strip() for i in os.environ.get("ARXIV_PAPER_IDS", "").split(",") if i.strip()]
 
 llm = get_llm_client(f"openrouter/{MODEL_SLUG}")
+# Hashing backend: deterministic, offline, no LLM/network call -- semantic search on
+# paper summaries costs nothing extra beyond the summarize_paper call already made.
+_embedder = get_embedder(EmbeddingConfig())
+
+_memory_store: MemoryStore | None = None
+
+
+def _get_memory_store() -> MemoryStore:
+    """Lazily construct the singleton MemoryStore (mirrors how `llm` is built once at
+    module load). MemoryStore's own __init__ creates MEMORY_DB's parent dir and runs its
+    idempotent schema migration, so no separate _init step is needed here."""
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = MemoryStore(str(MEMORY_DB))
+    return _memory_store
 
 
 class PaperSummary(BaseModel):
@@ -180,6 +199,43 @@ class ResearchAgent(Agent, llm=llm):
                 ),
             )
         self.papers_processed += 1
+        try:
+            self._record_memory(filename, summary)
+        except Exception:
+            pass
+
+    def _record_memory(self, filename: str, summary: PaperSummary) -> None:
+        """Embed the paper's summary and store it for later semantic similarity search.
+
+        Deterministic -- the hashing embedder makes no LLM/network call. Uses the
+        filename as the Memory id (not the default random id) so INSERT OR REPLACE
+        semantics match processed_papers: reprocessing a file under a different model
+        overwrites its memory the same way it overwrites its SQLite row, instead of
+        accumulating duplicates.
+        """
+        content = "\n".join(
+            [summary.title, summary.main_objective, summary.key_methodology, summary.resulting_metrics]
+        )
+        memory = Memory(id=filename, type=MemoryType.INFO, title=summary.title, content=content)
+        _get_memory_store().add(memory, embedding=_embedder.embed(content))
+
+    def find_similar_papers(self, query: str, k: int = 5) -> list[dict]:
+        """Semantic search over previously processed papers' summaries.
+
+        Deterministic, no LLM call -- uses the same offline hashing embedder as
+        _record_memory. Separate from the exact-match processed_papers dedup table;
+        this is for "find papers similar to X", not "have I processed this file".
+        """
+        if k <= 0:
+            return []
+        store = _get_memory_store()
+        hits = store.knn(_embedder.embed(query), k)
+        results = []
+        for memory_id, score in hits:
+            mem = store.get(memory_id)
+            if mem is not None:
+                results.append({"filename": mem.id, "title": mem.title, "score": score})
+        return results
 
     async def summarize_paper(self, text: str) -> PaperSummary:
         """Read the paper text and extract structured findings.
