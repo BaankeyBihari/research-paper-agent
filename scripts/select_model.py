@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import threading
 import webbrowser
@@ -18,6 +19,7 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 ENV_KEYS = {"ACTIVE_MODEL_SLUG", "REFERENCE_MODEL_SLUG", "CANDIDATE_MODEL_SLUGS"}
 FAMILIES = {"deepseek", "gemini", "gemma", "anthropic", "openai", "grok", "other"}
 TIERS = ("budget", "mid", "premium")
+MAX_UPDATE_PAYLOAD_BYTES = 16 * 1024
 
 
 def _as_float(value: object) -> float:
@@ -293,15 +295,39 @@ def build_page(models: list[dict], env_path: Path) -> str:
       rowsEl.innerHTML = "";
       for (const m of list) {{
         const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td><code>${{m.id}}</code></td>
-          <td>${{m.family}}</td>
-          <td>${{m.tier}}</td>
-          <td>${{fmtUsd(m.prompt_per_m)}}</td>
-          <td>${{fmtUsd(m.completion_per_m)}}</td>
-          <td>${{fmtUsd(m.token_pair_per_m)}}</td>
-          <td><button type="button" data-slug="${{m.id}}">Use this</button></td>
-        `;
+        const slugTd = document.createElement("td");
+        const slugCode = document.createElement("code");
+        slugCode.textContent = m.id;
+        slugTd.appendChild(slugCode);
+        tr.appendChild(slugTd);
+
+        const familyTd = document.createElement("td");
+        familyTd.textContent = m.family;
+        tr.appendChild(familyTd);
+
+        const tierTd = document.createElement("td");
+        tierTd.textContent = m.tier;
+        tr.appendChild(tierTd);
+
+        const promptTd = document.createElement("td");
+        promptTd.textContent = fmtUsd(m.prompt_per_m);
+        tr.appendChild(promptTd);
+
+        const completionTd = document.createElement("td");
+        completionTd.textContent = fmtUsd(m.completion_per_m);
+        tr.appendChild(completionTd);
+
+        const totalTd = document.createElement("td");
+        totalTd.textContent = fmtUsd(m.token_pair_per_m);
+        tr.appendChild(totalTd);
+
+        const actionTd = document.createElement("td");
+        const useBtn = document.createElement("button");
+        useBtn.type = "button";
+        useBtn.dataset.slug = m.id;
+        useBtn.textContent = "Use this";
+        actionTd.appendChild(useBtn);
+        tr.appendChild(actionTd);
         rowsEl.appendChild(tr);
       }}
       rowsEl.querySelectorAll("button[data-slug]").forEach((btn) => {{
@@ -364,9 +390,6 @@ def build_page(models: list[dict], env_path: Path) -> str:
 
 
 class ModelSelectorHandler(BaseHTTPRequestHandler):
-    models: list[dict] = []
-    env_path = Path(".env")
-
     def _json(self, status: HTTPStatus, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -380,7 +403,9 @@ class ModelSelectorHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
 
-        page = build_page(self.models, self.env_path).encode("utf-8")
+        models: list[dict] = getattr(self.server, "models", [])
+        env_path: Path = getattr(self.server, "env_path", Path(".env"))
+        page = build_page(models, env_path).encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(page)))
@@ -392,7 +417,17 @@ class ModelSelectorHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
 
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "Invalid Content-Length."})
+            return
+        if length < 0 or length > MAX_UPDATE_PAYLOAD_BYTES:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"message": "Payload too large."})
+            return
+        if length == 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "Request body is required."})
+            return
         raw = self.rfile.read(length)
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -408,20 +443,26 @@ class ModelSelectorHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"message": "Invalid .env key."})
             return
 
-        known_slugs = {m["id"] for m in self.models}
+        models: list[dict] = getattr(self.server, "models", [])
+        env_path: Path = getattr(self.server, "env_path", Path(".env"))
+        known_slugs = {m["id"] for m in models}
         if slug not in known_slugs:
             self._json(HTTPStatus.BAD_REQUEST, {"message": "Unknown model slug."})
             return
 
-        update_env_model(self.env_path, key, slug, append_candidate=append_candidate)
-        message = f"Updated {self.env_path} -> {key}={slug}"
+        update_env_model(env_path, key, slug, append_candidate=append_candidate)
+        message = f"Updated {env_path} -> {key}={slug}"
         print(message, flush=True)
         self._json(HTTPStatus.OK, {"message": message})
+        try:
+            self.wfile.flush()
+        except OSError:
+            pass
 
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        threading.Thread(target=self.server.shutdown).start()
 
     def log_message(self, format: str, *args: object) -> None:
-        return
+        logging.getLogger(__name__).debug("selector server: " + format, *args)
 
 
 def parse_args() -> argparse.Namespace:
@@ -437,10 +478,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def serve(models: list[dict], env_path: Path, open_browser: bool) -> None:
-    ModelSelectorHandler.models = models
-    ModelSelectorHandler.env_path = env_path
-
     with ThreadingHTTPServer(("127.0.0.1", 0), ModelSelectorHandler) as server:
+        server.models = models  # type: ignore[attr-defined]
+        server.env_path = env_path  # type: ignore[attr-defined]
         host, port = server.server_address
         url = f"http://{host}:{port}/"
         print(f"Model selector UI: {url}")
