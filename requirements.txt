@@ -1,0 +1,5 @@
+nooa[cli]
+nooa-memory
+pypdf
+litellm
+requests

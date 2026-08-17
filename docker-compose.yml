@@ -1,0 +1,13 @@
+services:
+  research-agent:
+    build: .
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      ACTIVE_MODEL_SLUG: ${ACTIVE_MODEL_SLUG:-nvidia/nemotron-3-nano-30b-a3b}
+    volumes:
+      - papers_data:/data/papers
+    ports:
+      - "5001:5001"
+
+volumes:
+  papers_data:
