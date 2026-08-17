@@ -26,9 +26,12 @@ def _parse_int_env(name: str) -> int | None:
     if raw is None:
         return None
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         raise SystemExit(f"{name}={raw!r} is not a valid integer") from None
+    if value < 0:
+        raise SystemExit(f"{name}={raw!r} must not be negative")
+    return value
 
 
 NUM_PAPERS = _parse_int_env("NUM_PAPERS")

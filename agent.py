@@ -24,9 +24,12 @@ def _parse_int_env(name: str) -> int | None:
     if raw is None:
         return None
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         raise SystemExit(f"{name}={raw!r} is not a valid integer") from None
+    if value < 0:
+        raise SystemExit(f"{name}={raw!r} must not be negative")
+    return value
 
 
 NUM_PAPERS = _parse_int_env("NUM_PAPERS")
@@ -57,11 +60,17 @@ def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str
     whose filename contains one of those IDs (substring match, so both versioned
     "2608.11597v1" and unversioned "2608.11597" IDs work). With neither set, every
     candidate passes through unchanged.
+
+    IDs are normalized to their last "/"-separated segment before matching, the same
+    way simulator.py's _download_entries derives filenames from the arXiv Atom feed's
+    id URL -- otherwise an old-style category-prefixed ID like "hep-th/9901001" would
+    never match its "9901001v1.pdf" file (the category isn't part of the filename).
     """
     if count is not None:
         return candidates[:count]
     if arxiv_ids:
-        return [p for p in candidates if any(aid in p.stem for aid in arxiv_ids)]
+        normalized_ids = [aid.rsplit("/", 1)[-1] for aid in arxiv_ids]
+        return [p for p in candidates if any(nid in p.stem for nid in normalized_ids)]
     return candidates
 
 

@@ -147,10 +147,7 @@ plain-Python `Evaluator(models={...})` API documented in its own README, because
 `compare_models.py` pre-populates `evaluator._model_metadata` directly before calling `run()` as a
 workaround; filed upstream as
 [NVIDIA-NeMo/labs-OO-Agents#152](https://github.com/NVIDIA-NeMo/labs-OO-Agents/issues/152) —
-drop the workaround once a fix lands. Its `summarize_paper`
-docstring is a deliberate literal copy of `agent.py`'s, not a
-shared constant — simpler to keep in sync by hand for one short prompt than to add an indirection for
-it. Update both together if the prompt changes.
+drop the workaround once a fix lands.
 
 **Config surface**: `PAPERS_DIR` (default `/data/papers`), `ACTIVE_MODEL_SLUG`, `OPENROUTER_API_KEY`
 — all read from the environment, set via `docker-compose.yml` from `.env`.
