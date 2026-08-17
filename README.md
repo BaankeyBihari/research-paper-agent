@@ -56,11 +56,33 @@ Set `ACTIVE_MODEL_SLUG` in `.env` (or inline) to any OpenRouter slug, then rebui
 |---|---|
 | Fast/Cheap | `nvidia/nemotron-3.5-lightning` |
 | Efficient | `nvidia/nemotron-3-nano-30b-a3b` |
-| High-Reasoning | `meta-llama/llama-3.1-70b-instruct` |
+| High-Reasoning (paid) | `openai/gpt-4o-mini` |
+
+(`meta-llama/llama-3.1-70b-instruct` previously held the High-Reasoning slot here, but live
+verification found it reliably fails to return structured output under NOOA's tool-calling strategy
+via OpenRouter — see the "Comparing models against a reference" cost note below for detail.)
 
 ```bash
 ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build
 ```
+
+## Choosing which papers to fetch/process
+
+By default, `simulator.py` downloads 3 random recent papers and `agent.py` processes everything
+pending in `PAPERS_DIR`. Two env vars narrow that down, with `NUM_PAPERS` taking precedence over
+`ARXIV_PAPER_IDS` entirely when both are set:
+
+- `ARXIV_PAPER_IDS=2608.11597,2608.11590` — fetch/process specifically these arXiv IDs (versioned
+  or not) instead of random papers / everything pending.
+- `NUM_PAPERS=5` — fetch/process exactly this many, falling back to random selection (fetch) or
+  first-N-pending (process), ignoring `ARXIV_PAPER_IDS` if it's also set.
+
+```bash
+ARXIV_PAPER_IDS=2608.11597,2608.11590 docker compose up --build
+```
+
+`compare_models.py` has its own scoped equivalents, `COMPARE_ARXIV_PAPER_IDS` /
+`COMPARE_NUM_PAPERS`, with the same precedence — see "Comparing models against a reference" below.
 
 ## Testing efficiency at home
 
@@ -89,9 +111,10 @@ docker compose exec research-agent python compare_models.py
 ```
 
 Defaults: 2 papers, reference = `openai/gpt-4o-mini`, candidates = both Nemotron tiers. Override via
-env vars: `COMPARE_NUM_PAPERS`, `REFERENCE_MODEL_SLUG`, `CANDIDATE_MODEL_SLUGS` (comma-separated). A
-summary prints to stdout; the full run is written as a `.noo-eval.jsonl` file under
-`/data/papers/eval_results/`, which the trace viewer's **Evaluations** tab reads directly (see
+env vars: `COMPARE_NUM_PAPERS`, `COMPARE_ARXIV_PAPER_IDS` (comma-separated arXiv IDs, precedence as
+in "Choosing which papers to fetch/process" above), `REFERENCE_MODEL_SLUG`, `CANDIDATE_MODEL_SLUGS`
+(comma-separated). A summary prints to stdout; the full run is written as a `.noo-eval.jsonl` file
+under `/data/papers/eval_results/`, which the trace viewer's **Evaluations** tab reads directly (see
 "Viewing results" above for reaching the viewer).
 
 `eval_pipeline` is not on PyPI, but it doesn't need a full monorepo clone either: it installs

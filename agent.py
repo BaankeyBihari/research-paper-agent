@@ -17,6 +17,10 @@ PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", "/data/papers"))
 STATE_DB = PAPERS_DIR / ".agent_state.sqlite3"
 MAX_CHARS = 20_000
 
+_num_papers_env = os.environ.get("NUM_PAPERS") or None
+NUM_PAPERS = int(_num_papers_env) if _num_papers_env else None
+ARXIV_PAPER_IDS = [i.strip() for i in os.environ.get("ARXIV_PAPER_IDS", "").split(",") if i.strip()]
+
 llm = get_llm_client(f"openrouter/{MODEL_SLUG}")
 
 
@@ -31,6 +35,23 @@ def extract_pdf_text(path: Path, max_chars: int = MAX_CHARS) -> str:
     reader = PdfReader(str(path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     return text[:max_chars]
+
+
+def select_papers(candidates: list[Path], count: int | None, arxiv_ids: list[str]) -> list[Path]:
+    """Narrow a sorted candidate list down to what should actually be used.
+
+    A given count takes precedence over arxiv_ids entirely (mirrors simulator.py's
+    fetch-stage precedence): if count is set, just take the first `count` candidates
+    and ignore arxiv_ids. Otherwise, if arxiv_ids is non-empty, keep only candidates
+    whose filename contains one of those IDs (substring match, so both versioned
+    "2608.11597v1" and unversioned "2608.11597" IDs work). With neither set, every
+    candidate passes through unchanged.
+    """
+    if count is not None:
+        return candidates[:count]
+    if arxiv_ids:
+        return [p for p in candidates if any(aid in p.stem for aid in arxiv_ids)]
+    return candidates
 
 
 class ResearchAgent(Agent, llm=llm):
@@ -57,13 +78,18 @@ class ResearchAgent(Agent, llm=llm):
             )
 
     def get_local_papers(self) -> list[Path]:
-        """Scan PAPERS_DIR for PDFs that have not been processed yet (deterministic, no LLM call)."""
+        """Scan PAPERS_DIR for PDFs that have not been processed yet (deterministic, no LLM call).
+
+        Narrowed by NUM_PAPERS / ARXIV_PAPER_IDS via select_papers -- see its docstring
+        for the precedence rule between the two.
+        """
         self._init_state_db()
         if not PAPERS_DIR.exists():
             return []
         with sqlite3.connect(STATE_DB) as conn:
             seen = {row[0] for row in conn.execute("SELECT filename FROM processed_papers")}
-        return sorted(p for p in PAPERS_DIR.glob("*.pdf") if p.name not in seen)
+        candidates = sorted(p for p in PAPERS_DIR.glob("*.pdf") if p.name not in seen)
+        return select_papers(candidates, NUM_PAPERS, ARXIV_PAPER_IDS)
 
     def lookup_paper(self, filename: str) -> dict | None:
         """Look up a previously processed paper by filename, regardless of which model processed it."""

@@ -10,6 +10,7 @@ Evaluations tab, and summarized on stdout.
 Usage:
     python compare_models.py
     COMPARE_NUM_PAPERS=5 python compare_models.py
+    COMPARE_ARXIV_PAPER_IDS=2608.11597,2608.11590 python compare_models.py
     REFERENCE_MODEL_SLUG=anthropic/claude-3-5-sonnet python compare_models.py
 """
 
@@ -22,9 +23,15 @@ from eval_pipeline import Evaluator, ScoreResult
 from eval_pipeline.models import ScoringContext
 from nooa.unifiedllm.registry import get_llm_client
 
-from agent import PAPERS_DIR, PaperSummary, ResearchAgent, extract_pdf_text
+from agent import PAPERS_DIR, PaperSummary, ResearchAgent, extract_pdf_text, select_papers
 
-NUM_PAPERS = int(os.environ.get("COMPARE_NUM_PAPERS", "2"))
+COMPARE_ARXIV_PAPER_IDS = [
+    i.strip() for i in os.environ.get("COMPARE_ARXIV_PAPER_IDS", "").split(",") if i.strip()
+]
+_num_papers_env = os.environ.get("COMPARE_NUM_PAPERS") or None
+# Default to 2 papers only when neither knob is set, to preserve today's behavior --
+# an explicit COMPARE_ARXIV_PAPER_IDS with no count should use exactly that list.
+NUM_PAPERS = int(_num_papers_env) if _num_papers_env else (None if COMPARE_ARXIV_PAPER_IDS else 2)
 # meta-llama/llama-3.1-70b-instruct (the original default) consistently fails to
 # return valid structured output under NOOA's codeact tool-calling strategy via
 # OpenRouter -- reproduces across multiple papers, unrelated to content/extraction
@@ -62,7 +69,8 @@ class PaperSimilarityScorer:
 
 
 async def main() -> None:
-    papers = sorted(PAPERS_DIR.glob("*.pdf"))[:NUM_PAPERS]
+    candidates = sorted(PAPERS_DIR.glob("*.pdf"))
+    papers = select_papers(candidates, NUM_PAPERS, COMPARE_ARXIV_PAPER_IDS)
     if not papers:
         raise SystemExit(f"No PDFs found in {PAPERS_DIR}; run simulator.py first.")
     paper_texts: dict[Path, str] = {p: extract_pdf_text(p) for p in papers}
