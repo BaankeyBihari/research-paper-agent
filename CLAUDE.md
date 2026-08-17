@@ -107,20 +107,25 @@ LLM call. Everything else is a normal deterministic Python method:
   `nooa.unifiedllm.registry`, where `MODEL_SLUG` comes from `ACTIVE_MODEL_SLUG` (env var, defaults to
   `nvidia/nemotron-3-nano-30b-a3b`). This is what makes model-switching a pure env-var change.
 
-**State/memory**: two separate SQLite files, both written directly to the `/data/papers` volume.
-Exact-match dedup and history use a plain `sqlite3` table (`processed_papers`, `.agent_state.sqlite3`)
-— deliberately not `nooa-memory`'s own `MemoryManager`/`MemoryToolsMixin`, since that surface is built
-for an LLM agent that autonomously authors/curates its own memory via tools during reasoning
-(reflection, decay/forgetting, spontaneous per-turn context injection) — none of which fits
+**State/memory**: two separate SQLite files in two separate volumes. Exact-match dedup and history use
+a plain `sqlite3` table (`processed_papers`, `/data/papers/.agent_state.sqlite3`) — deliberately not
+`nooa-memory`'s own `MemoryManager`/`MemoryToolsMixin`, since that surface is built for an LLM agent
+that autonomously authors/curates its own memory via tools during reasoning (reflection,
+decay/forgetting, spontaneous per-turn context injection) — none of which fits
 `process_pending_papers`'s fully deterministic orchestration loop. Semantic recall ("find papers
 similar to X") instead uses `nooa_memory`'s lower-level primitives directly: `_record_memory` embeds
 each `PaperSummary` with `get_embedder(EmbeddingConfig())` (`backend="hashing"` — deterministic,
-offline, no LLM/network call) and writes it to a `nooa_memory.MemoryStore` (`.agent_memory.sqlite3`),
-keyed by filename so re-processing a paper overwrites its memory the same way it overwrites its
-`processed_papers` row; `find_similar_papers` embeds a query the same way and calls `store.knn(...)`.
-Because both SQLite files live in the same Docker volume as the PDFs, history survives across
-container restarts and model switches — this is what makes it possible to ask "did model A already
-read this paper" while model B is active.
+offline, no LLM/network call) and writes it to a `nooa_memory.MemoryStore` at `.nooa/memory/memory.sqlite`
+(relative to cwd, i.e. `/app/.nooa/memory/memory.sqlite`), keyed by filename so re-processing a paper
+overwrites its memory the same way it overwrites its `processed_papers` row; `find_similar_papers`
+embeds a query the same way and calls `store.knn(...)`. The memory store's path is deliberately
+*not* under `/data/papers` — it matches `nooa_memory`'s own `MemoryManager` default-path convention
+(`.nooa/memory/memory.sqlite`, relative to the process's cwd) so it lands exactly where the trace
+viewer's Memory tab auto-discovers stores (see "Verified live" below), volumed separately via
+`docker-compose.yml`'s `./nooa-memory:/app/.nooa`. Both locations persist across container restarts
+and model switches — this is what makes it possible to ask "did model A already read this paper"
+while model B is active, and to browse semantic memory in the viewer regardless of which model wrote
+it.
 
 **`simulator.py`** is standalone and has no dependency on `agent.py`. It hits the live arXiv Atom API
 (`http://export.arxiv.org/api/query`) directly with `requests` + stdlib `xml.etree.ElementTree`
@@ -180,21 +185,25 @@ installed" and, because `entrypoint.sh` does `wait "$TRACE_VIEWER_PID"`, the who
 once `agent.py` finishes. See `README.md`'s "Verified" section for more, including a real
 prompt-quality issue seen on `nemotron-3-nano-30b-a3b` (titles picking up author lists, objectives
 copied verbatim) that the `summarize_paper` docstring now explicitly guards against. The Evaluations
-tab is populated by `compare_models.py`'s real `eval_pipeline` runs. The Memory tab stays empty even
-though `nooa_memory.MemoryStore` is now wired up (see "State/memory" above) — confirmed from the
-viewer's own source (`nooa/viewer/memory_routes.py`): it can only open a store under its own process
-cwd (`/app` in this container, since `entrypoint.sh` never `cd`s from the Dockerfile's `WORKDIR`), and
-auto-discovery narrows that further to `/app/.nooa/memory/*.sqlite`. `.agent_memory.sqlite3`
-deliberately lives under `/data/papers` instead, matching `processed_papers`'s persistence story
-(one Docker volume, survives restarts, no new `docker-compose.yml` volume needed) — a real,
-considered trade-off, not an oversight. `find_similar_papers()` itself works fully regardless of the
-viewer; only the visual tab is affected.
+tab is populated by `compare_models.py`'s real `eval_pipeline` runs, and the Memory tab is populated by
+`nooa_memory.MemoryStore` (see "State/memory" above) — confirmed live via the viewer's own
+`/api/memory/dbs` and `/api/memory/records` endpoints (`GET /api/memory/dbs` returned
+`/app/.nooa/memory/memory.sqlite` with no `?db=` needed, and `/api/memory/records` returned real
+records). This took a real fix: the store originally lived under `/data/papers` (matching
+`processed_papers`'s persistence story), but the viewer's own source
+(`nooa/viewer/memory_routes.py`) only opens a store under its own process cwd (`/app` in this
+container) and only *auto-discovers* `/app/.nooa/memory/*.sqlite` — `/data/papers/.agent_memory.sqlite3`
+was outside that entirely, and even manually passing `?db=` was rejected (403, "must live under the
+working directory"). Moved to `.nooa/memory/memory.sqlite` (relative to cwd, matching
+`nooa_memory.MemoryManager`'s own default-path convention) with a new `docker-compose.yml` volume
+(`./nooa-memory:/app/.nooa`) so it persists like everything else.
 
-`_record_memory`/`find_similar_papers` confirmed live (`docker compose build` + `docker compose run`):
-`nooa-memory` installs and imports cleanly, `.agent_memory.sqlite3` is created under the mounted
-`/data/papers` volume and survives across separate container runs (same volume, new container), and a
-query correctly ranks a topically-related fake paper above an unrelated one — no `OPENROUTER_API_KEY`
-or network call needed, since the default `hashing` embedder is fully offline.
+`_record_memory`/`find_similar_papers` confirmed live (`docker compose build` + `docker compose up`):
+`nooa-memory` installs and imports cleanly, `.nooa/memory/memory.sqlite` is created at `/app/.nooa/memory/`
+and survives across separate container runs (volumed via `./nooa-memory`), a query correctly ranks a
+topically-related fake paper above an unrelated one with no `OPENROUTER_API_KEY`/network call needed
+(the default `hashing` embedder is fully offline), and the trace viewer's Memory tab genuinely shows
+real processed-paper records with no manual `?db=` workaround required.
 
 `meta-llama/llama-3.1-70b-instruct` was `compare_models.py`'s original reference-model default, but
 live verification found it reliably fails to return structured output under NOOA's tool-calling

@@ -15,6 +15,11 @@ services:
     volumes:
       - papers_data:/data/papers
       - ./traces:/root/.config/nooa
+      # Semantic-memory store (agent.py's MEMORY_DB) -- deliberately at /app/.nooa, not
+      # under /data/papers, so it lands where the trace viewer's Memory tab auto-discovers
+      # stores (<viewer's cwd>/.nooa/memory/*.sqlite). Volumed separately so it survives
+      # container restarts the same way processed_papers/traces do.
+      - ./nooa-memory:/app/.nooa
     # No ports published: the viewer's API 403s anything that doesn't look
     # like loopback traffic once bound to 0.0.0.0, and Docker's NAT always
     # defeats that check from the host side (`nooa start-dev` also can't run

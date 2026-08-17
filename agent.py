@@ -19,7 +19,13 @@ from nooa_memory.embeddings import get_embedder
 MODEL_SLUG = os.environ.get("ACTIVE_MODEL_SLUG", "nvidia/nemotron-3-nano-30b-a3b")
 PAPERS_DIR = Path(os.environ.get("PAPERS_DIR", "/data/papers"))
 STATE_DB = PAPERS_DIR / ".agent_state.sqlite3"
-MEMORY_DB = PAPERS_DIR / ".agent_memory.sqlite3"
+# Deliberately NOT under PAPERS_DIR: the trace viewer's Memory tab only auto-discovers
+# stores at <its cwd>/.nooa/memory/*.sqlite (nooa_memory's own MemoryManager convention),
+# and refuses to open a store outside its cwd even via ?db=. entrypoint.sh runs
+# `nooa start-dev` from the Dockerfile's WORKDIR (/app) without cd'ing elsewhere, and
+# agent.py itself always runs from the same cwd, so this relative path lands in the same
+# place the viewer looks -- see docker-compose.yml's ./nooa-memory volume for persistence.
+MEMORY_DB = Path(".nooa/memory/memory.sqlite")
 MAX_CHARS = 20_000
 
 def _parse_int_env(name: str) -> int | None:

@@ -134,7 +134,10 @@ docker compose exec research-agent python -c \
   "from agent import ResearchAgent; print(ResearchAgent().find_similar_papers('transformer attention mechanism'))"
 ```
 
-Returns a list of `{"filename", "title", "score"}` dicts, ranked by cosine similarity.
+Returns a list of `{"filename", "title", "score"}` dicts, ranked by cosine similarity. Records are
+also browsable in the trace viewer's **Memory** tab (see "Verified" below) — the store lives at
+`.nooa/memory/memory.sqlite` (volumed via `./nooa-memory:/app/.nooa`), not under `/data/papers`, so
+it lands where the viewer auto-discovers it.
 
 ## Comparing models against a reference
 
@@ -210,12 +213,14 @@ Confirmed end-to-end with a live run against `nvidia/nemotron-3-nano-30b-a3b` on
   and looks blank. The `.devcontainer` workaround (see "Viewing results" above) has been confirmed
   working from an actual VS Code Dev Containers session: traces show up correctly.
 - The trace viewer's **Evaluations** tab is populated by real `eval_pipeline` runs — see
-  `compare_models.py` above. The **Memory** tab still looks empty even though `nooa_memory.MemoryStore`
-  is now wired up for semantic recall (see "Finding similar papers" / "Known deviations" above) — the
-  viewer's own source (`nooa/viewer/memory_routes.py`) only opens a store under its own process cwd
-  (`/app` in this container), and `.agent_memory.sqlite3` deliberately lives under `/data/papers`
-  instead, matching `processed_papers`'s persistence story rather than adding a second Docker volume.
-  `find_similar_papers()` works fully regardless; only the viewer's visual tab is affected.
+  `compare_models.py` above. The **Memory** tab is populated by `nooa_memory.MemoryStore`
+  (see "Finding similar papers" / "Known deviations" above) — confirmed live via the viewer's own
+  `/api/memory/dbs` and `/api/memory/records` endpoints, no manual `?db=` needed. This required
+  moving the store off `/data/papers`: the viewer's own source (`nooa/viewer/memory_routes.py`) only
+  opens (and only auto-discovers) a store under its own process cwd (`/app` in this container), so
+  the memory store now lives at `.nooa/memory/memory.sqlite` instead — matching
+  `nooa_memory.MemoryManager`'s own default-path convention — with its own `docker-compose.yml`
+  volume (`./nooa-memory:/app/.nooa`) for persistence.
 - `compare_models.py` confirmed end-to-end against `eval_pipeline` (both a free-tier dev pass and a
   paid confirmation pass with `openai/gpt-4o-mini`): reference summarization, `Evaluator.add_test`,
   candidate scoring via a custom `PaperSimilarityScorer`, and a well-formed `.noo-eval.jsonl` output
