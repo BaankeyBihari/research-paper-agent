@@ -450,7 +450,14 @@ class ModelSelectorHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"message": "Unknown model slug."})
             return
 
-        update_env_model(env_path, key, slug, append_candidate=append_candidate)
+        try:
+            update_env_model(env_path, key, slug, append_candidate=append_candidate)
+        except Exception as exc:
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"message": f"Failed to update {env_path}: {exc}"},
+            )
+            return
         message = f"Updated {env_path} -> {key}={slug}"
         print(message, flush=True)
         self._json(HTTPStatus.OK, {"message": message})
