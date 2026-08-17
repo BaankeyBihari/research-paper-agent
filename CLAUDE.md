@@ -60,6 +60,12 @@ docker compose exec research-agent python compare_models.py
 Switch models via `ACTIVE_MODEL_SLUG` (any OpenRouter slug), e.g.
 `ACTIVE_MODEL_SLUG=nvidia/nemotron-3.5-lightning docker compose up --build`.
 
+## Remote
+
+https://github.com/BaankeyBihari/research-paper-agent — `origin` is HTTPS, not SSH. The SSH key on
+this machine isn't registered with GitHub (`git@github.com: Permission denied (publickey)`), so
+`git push` over SSH fails here; HTTPS works via the stored `gh`/credential-manager auth.
+
 ## Architecture
 
 **`agent.py`** is the entire application. `ResearchAgent(Agent, llm=llm)` follows NOOA's core

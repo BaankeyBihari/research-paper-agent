@@ -1,5 +1,7 @@
 # research-paper-agent
 
+[github.com/BaankeyBihari/research-paper-agent](https://github.com/BaankeyBihari/research-paper-agent)
+
 A small Dockerized research assistant built on [NVIDIA NOOA](https://github.com/NVIDIA-NeMo/labs-OO-Agents)
 (Object-Oriented Agents), used to try the framework's "agent as a Python class" model and to compare
 OpenRouter models on summarization quality/speed.
